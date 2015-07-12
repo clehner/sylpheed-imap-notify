@@ -34,21 +34,21 @@ static SylPluginInfo info = {
 };
 
 static const gchar *notify_str =
-    "XX1 NOTIFY SET (inboxes (MessageNew FlagChange MessageExpunge))";
+    "XX1 CLOSE\nXX2 NOTIFY SET (inboxes (MessageNew FlagChange MessageExpunge))";
 
 static void init_done_cb(GObject *obj, gpointer data);
 static void app_exit_cb(GObject *obj, gpointer data);
 static void inc_mail_start_cb(GObject *obj, PrefsAccount *account);
 static gint imap_recv_msg(Session *session, const gchar *msg);
 static gint imap_recv_status(IMAPSession *session, const gchar *msg);
-static gint imap_recv_capability(IMAPSession *session, const gchar *msg);
 static gint parse_status_att_list	(gchar		*str,
 					 gint		*messages,
 					 gint		*recent,
 					 guint32	*uid_next,
 					 guint32	*uid_validity,
 					 gint		*unseen);
-
+static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
+		const gchar *mailbox);
 static IMAPSession *get_imap_notify_session(PrefsAccount *account);
 
 static GSList *sessions_list = NULL;
@@ -88,7 +88,14 @@ void plugin_load(void)
 
 void plugin_unload(void)
 {
-       g_print("IMAP NOTIFY plugin unloaded\n");
+       GSList *cur;
+
+       g_print("IMAP NOTIFY plugin unloading\n");
+
+       for (cur = sessions_list; cur != NULL; cur = cur->next)
+	       session_destroy(cur->data);
+
+       g_slist_free(sessions_list);
 }
 
 SylPluginInfo *plugin_info(void)
@@ -103,22 +110,12 @@ gint plugin_interface_version(void)
 
 static void init_done_cb(GObject *obj, gpointer data)
 {
-       GtkWidget *btn = gtk_button_new_with_label("BTN");
-       gtk_widget_show(btn);
        g_print("imap-notify: %p: app init done\n", obj);
-       syl_plugin_folderview_add_sub_widget(btn);
-       // syl_plugin_notification_window_open("HI", "yep\nyep", 8);
 }
 
 static void app_exit_cb(GObject *obj, gpointer data)
 {
-       GSList *cur;
-
        g_print("imap-notify: %p: app will exit\n", obj);
-
-       for (cur = sessions_list; cur != NULL; cur = cur->next)
-	       session_destroy(cur->data);
-       g_slist_free(sessions_list);
 }
 
 static void inc_mail_start_cb(GObject *obj, PrefsAccount *account)
@@ -172,10 +169,14 @@ static gint imap_recv_status(IMAPSession *session, const gchar *msg)
 	guint32 uid_next = 0;
 	guint32 uid_validity = 0;
 	gint unseen = 0;
+	FolderItem *item;
+
+	log_print("IMAP NOTIFY STATUS: %s\n", msg);
 
 	if (*str == '"') {
-		mailbox = str + 1;
-		str = extract_quote_with_escape(str, '"') + 1;
+		mailbox = str;
+		extract_quote_with_escape(mailbox, '"');
+		mailbox++;
 	} else {
 		mailbox = str;
 		str = strchr(str, ' ');
@@ -188,33 +189,33 @@ static gint imap_recv_status(IMAPSession *session, const gchar *msg)
 
 	debug_print("IMAP NOTIFY status: \"%s\" %d %d %zu %zu %d\n",
 			mailbox, messages, recent, uid_next, uid_validity, unseen);
-}
 
-static gint imap_recv_capability(IMAPSession *session, const gchar *msg)
-{
-	session->capability = g_strsplit(msg, " ", -1);
+	syl_plugin_notification_window_open("IMAP NOTIFY: mailbox", mailbox, 10);
+
+	item = get_folder_item_for_mailbox(session, mailbox);
+	if (!item) {
+		debug_print("Got STATUS for unknown mailbox %s\n", mailbox);
+		return 0;
+	}
+
+	(void)syl_plugin_folderview_check_new_item(item);
+
 	return 0;
 }
 
 static gint imap_recv_msg(Session *session, const gchar *msg)
 {
-	gint ret;
+	gint ret = 0;
 
 	log_print("IMAP4<< %s\n", msg);
-	syl_plugin_notification_window_open("IMAP NOTIFY: recv", msg, 9);
 
-	if (!strncmp(msg, "XX1 OK", 6)) {
+	if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
-		ret = 0;
+		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 5);
 	} else if (*msg++ != '*' || *msg++ != ' ') {
 		/* unknown */
-		ret = 0;
 	} else if (!strncmp(msg, "STATUS ", 7)) {
-		log_message("IMAP NOTIFY STATUS\n");
 		ret = imap_recv_status(IMAP_SESSION(session), msg + 7);
-	} else if (!strncmp(msg, "CAPABILITY ", 11)) {
-		log_message("IMAP CAPABILITY\n");
-		ret = imap_recv_capability(IMAP_SESSION(session), msg + 11);
 	}
 
 	return session_recv_msg(session);
@@ -226,6 +227,29 @@ static gint imap_recv_msg(Session *session, const gchar *msg)
 	    if (imap_cmd_notify(session, "(inboxes (MessageNew FlagChange MessageExpunge))")
 	    != IMAP_SUCCESS) {
 	    */
+
+static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
+		const gchar *mailbox)
+{
+
+	gchar buf[512];
+	gchar *str;
+
+	for (str = (gchar *)mailbox; *str; str++)
+		if (*str == '.')
+			*str = '/';
+
+	snprintf(buf, sizeof buf, "#imap/%s/%s",
+			session->folder->account->account_name, mailbox);
+
+	log_message("IMAP NOTIFY mailbox: %s. name: %s\n", buf);
+	// return folder_find_item_from_path(mailbox);
+	return folder_find_item_from_identifier(buf);
+	// #imap/cel/Subscriptions/11:11/foo"pie
+	// "Subscriptions.11:11.foo\"pie"
+	// #imap/cel/Subscriptions/11:11/a.d
+	// Subscriptions.11:11.a.d
+}
 
 static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 {
@@ -244,6 +268,7 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 	session = IMAP_SESSION(account->folder->session);
 	if (session) {
 		g_print("imap-notify: stealing IMAP session for NOTIFY\n");
+		syl_plugin_notification_window_open("IMAP NOTIFY", "stole session", 6);
 		sessions_list = g_slist_prepend(sessions_list, session);
 		account->folder->session = NULL;
 
