@@ -30,10 +30,10 @@
 #include "prefs_common.h"
 
 static SylPluginInfo info = {
-        "IMAP NOTIFY",
-        "0.0.1",
-        "Charles Lehner",
-        "IMAP NOTIFY implementation for Sylpheed"
+	"IMAP NOTIFY",
+	"0.0.1",
+	"Charles Lehner",
+	"IMAP NOTIFY implementation for Sylpheed"
 };
 
 static const gchar *notify_str =
@@ -87,68 +87,68 @@ static struct {
 
 void plugin_load(void)
 {
-       GList *list, *cur;
-       const gchar *ver;
-       gpointer mainwin;
+	GList *list, *cur;
+	const gchar *ver;
+	gpointer mainwin;
 
-       g_print("IMAP NOTIFY plug-in loaded!\n");
+	g_print("IMAP NOTIFY plug-in loaded!\n");
 
-       list = folder_get_list();
-       g_print("folder list = %p\n", list);
-       for (cur = list; cur != NULL; cur = cur->next) {
-               Folder *folder = FOLDER(cur->data);
-               gchar *id = folder_get_identifier(folder);
-               g_print("folder id = %s\n", id);
-       }
+	list = folder_get_list();
+	g_print("folder list = %p\n", list);
+	for (cur = list; cur != NULL; cur = cur->next) {
+		Folder *folder = FOLDER(cur->data);
+		gchar *id = folder_get_identifier(folder);
+		g_print("folder id = %s\n", id);
+	}
 
-       ver = syl_plugin_get_prog_version();
-       g_print("program ver: %s\n", ver);
+	ver = syl_plugin_get_prog_version();
+	g_print("program ver: %s\n", ver);
 
-       mainwin = syl_plugin_main_window_get();
-       g_print("mainwin: %p\n", mainwin);
-       syl_plugin_main_window_popup(mainwin);
+	mainwin = syl_plugin_main_window_get();
+	g_print("mainwin: %p\n", mainwin);
+	syl_plugin_main_window_popup(mainwin);
 
-       g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
-                        NULL);
-       g_signal_connect(syl_app_get(), "app-exit", G_CALLBACK(app_exit_cb),
-                        NULL);
-       syl_plugin_signal_connect("inc-mail-finished",
-                                 G_CALLBACK(inc_mail_finished_cb), NULL);
+	g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
+			NULL);
+	g_signal_connect(syl_app_get(), "app-exit", G_CALLBACK(app_exit_cb),
+			NULL);
+	syl_plugin_signal_connect("inc-mail-finished",
+			G_CALLBACK(inc_mail_finished_cb), NULL);
 
-       g_print("imap-notify plug-in loading done\n");
+	g_print("imap-notify plug-in loading done\n");
 }
 
 void plugin_unload(void)
 {
-       g_print("IMAP NOTIFY plugin unloaded\n");
+	g_print("IMAP NOTIFY plugin unloaded\n");
 }
 
 SylPluginInfo *plugin_info(void)
 {
-       return &info;
+	return &info;
 }
 
 gint plugin_interface_version(void)
 {
-       return SYL_PLUGIN_INTERFACE_VERSION;
+	return SYL_PLUGIN_INTERFACE_VERSION;
 }
 
 static void init_done_cb(GObject *obj, gpointer data)
 {
-       g_print("imap-notify: %p: app init done\n", obj);
+	g_print("imap-notify: %p: app init done\n", obj);
 }
 
 static void app_exit_cb(GObject *obj, gpointer data)
 {
-       GSList *cur;
+	GSList *cur;
 
-       g_print("imap-notify: %p: app will exit\n", obj);
+	g_print("imap-notify: %p: app will exit\n", obj);
 
-       for (cur = sessions_list; cur != NULL; cur = cur->next)
-	       session_destroy(cur->data);
-       g_slist_free(sessions_list);
+	for (cur = sessions_list; cur != NULL; cur = cur->next)
+		session_destroy(cur->data);
+	g_slist_free(sessions_list);
 
-       summaries_list_free();
+	summaries_list_free();
 }
 
 static void inc_mail_finished_cb(GObject *obj, gint new_messages)
@@ -321,7 +321,9 @@ static void imap_recv_status(IMAPSession *session, const gchar *msg)
 		debug_print("Got STATUS for unknown mailbox %s\n", mailbox);
 		return;
 	}
-	check_new_debounced(item);
+
+	if (unseen || recent)
+		check_new_debounced(item);
 }
 
 static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
@@ -465,8 +467,8 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
 		session = (IMAPSession *)cur->data;
 		if (session->folder == (Folder *)account->folder)
-                        return session;
-        }
+			return session;
+	}
 
 	/* No NOTIFY session yet. Try to steal one from the folder */
 
@@ -489,6 +491,6 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 
 	imap_notify_session_init(SESSION(session));
 
-        return session;
+	return session;
 }
 
