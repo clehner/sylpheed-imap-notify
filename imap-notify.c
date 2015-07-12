@@ -18,6 +18,7 @@
  */
 
 #include <glib.h>
+#include <glib/gi18n.h>
 #include <gtk/gtk.h>
 #include <ctype.h>
 
@@ -26,6 +27,7 @@
 #include "folder.h"
 #include "imap.h"
 #include "session.h"
+#include "prefs_common.h"
 
 static SylPluginInfo info = {
         "IMAP NOTIFY",
@@ -37,15 +39,23 @@ static SylPluginInfo info = {
 static const gchar *notify_str =
     "XX1 SELECT INBOX\n"
     "XX2 NOTIFY SET "
-	"(selected (MessageNew MessageExpunge)) "
+	"(selected (MessageExpunge MessageNew "
+	    "(uid body.peek[header.fields (from subject)]))) "
 	"(inboxes (MessageNew))";
     // "XX2 NOTIFY SET (inboxes (MessageNew (uid body.peek[header.fields (from to subject)])))";
     // "XX2 notify set (inboxes (MessageNew FlagChange MessageExpunge) "
 	// "(uid body.peek[header.fields (from to subject)]))";
 
+typedef struct _MsgSummary
+{
+	Session *session;
+	gchar *subject;
+	gchar *from;
+} MsgSummary;
+
 static void init_done_cb(GObject *obj, gpointer data);
 static void inc_mail_start_cb(GObject *obj, PrefsAccount *account);
-static gboolean check_item_cb(gpointer item);
+static gboolean display_summaries(gpointer item);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
 static void imap_recv_status(IMAPSession *session, const gchar *msg);
@@ -59,8 +69,17 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 		const gchar *mailbox);
 static IMAPSession *get_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(Session *session);
+static MsgSummary *get_current_session_summary(Session *);
+static void summaries_list_free(void);
 
 static GSList *sessions_list = NULL;
+
+static struct {
+	GSList *list;
+	gint len;
+	gint timer;
+	gint total_msgs;
+} summaries = {NULL, 0, 0, 0};
 
 void plugin_load(void)
 {
@@ -101,8 +120,10 @@ void plugin_unload(void)
 
        for (cur = sessions_list; cur != NULL; cur = cur->next)
 	       session_destroy(cur->data);
-
        g_slist_free(sessions_list);
+
+       summaries_list_free();
+
        g_print("IMAP NOTIFY plugin unloaded\n");
 }
 
@@ -125,6 +146,54 @@ static void inc_mail_start_cb(GObject *obj, PrefsAccount *account)
 {
        IMAPSession *session = get_imap_notify_session(account);
        // syl_plugin_notification_window_open("IMAP NOTIFY", "starting", 6);
+}
+
+static void summaries_list_free(void)
+{
+	GSList *cur;
+
+	for (cur = summaries.list; cur != NULL; cur = cur->next) {
+		MsgSummary *summary = cur->data;
+		g_free(summary->from);
+		g_free(summary->subject);
+		g_free(summary);
+	}
+
+	g_slist_free(summaries.list);
+	summaries.len = 0;
+}
+
+static MsgSummary *get_current_session_summary(Session *session)
+{
+	MsgSummary *summary = NULL;
+	GSList *cur;
+
+	for (cur = summaries.list; cur != NULL; cur = cur->next) {
+		summary = cur->data;
+		if (summary->session == session)
+			break;
+	}
+
+	if (!summary) {
+		summary = g_new0(MsgSummary, 1);
+		summary->session = session;
+		summaries.list = g_slist_prepend(summaries.list, summary);
+	}
+
+	return summary;
+}
+
+void msg_summary_show_if_complete(MsgSummary *summary) {
+	if (!summary->from || !summary->subject) {
+		debug_print("summary not ready. %s %s\n", summary->from,
+				summary->subject);
+	}
+
+	/* debounce showing the notification */
+	if (summaries.timer)
+		g_source_remove(summaries.timer);
+	summaries.timer = g_timeout_add_full(G_PRIORITY_LOW, 100,
+			display_summaries, NULL, NULL);
 }
 
 static gint parse_status_att_list(gchar *str,
@@ -225,30 +294,56 @@ static void imap_recv_status(IMAPSession *session, const gchar *msg)
 	check_new(session, item);
 }
 
-static void imap_recv_num(IMAPSession *session, const gchar *msg)
+static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
 {
-	gint num;
-
-	for (num = 0; isdigit(*msg); msg++)
-		num = num * 10 + *msg - '0';
-
-	if (*msg++ != ' ')
-		return;
-
 	if (!strcmp(msg, "EXISTS")) {
 		log_print("IMAP NOTIFY: EXISTS %d\n", num);
 	} else if (!strcmp(msg, "RECENT")) {
 		log_print("IMAP NOTIFY: RECENT %d\n", num);
+		if (num == 0) return;
 		check_new(session, syl_plugin_summary_get_current_folder());
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
+	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
+		MsgSummary *summary;
+		/* receiving some headers of a new message */
+		summaries.total_msgs++;
+		if (summaries.len < 5)
+			get_current_session_summary(SESSION(session));
 	} else {
 		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
 }
 
-static gboolean check_item_cb(gpointer item) {
-	(void)syl_plugin_folderview_check_new_item(item);
+static gboolean display_summaries(gpointer item) {
+	GSList *cur;
+	gchar title[1024];
+	GString *str;
+
+	g_snprintf(title, sizeof title-2, _("Sylpheed: %d new messages"),
+			summaries.total_msgs);
+	strcat(title, "!");
+	str = g_string_new("");
+
+	log_message(title);
+	for (cur = summaries.list; cur != NULL; cur = cur->next) {
+		MsgSummary *summary = cur->data;
+		gchar *markup;
+
+		if (str->len > 0)
+			g_string_append_c(str, '\n');
+		markup = g_markup_printf_escaped("<b>%s</b>  %s",
+				    summary->subject, summary->from);
+		g_string_append(str, markup);
+		g_free(markup);
+	}
+
+	syl_plugin_notification_window_open(title, str->str,
+			prefs_common.notify_window_period);
+
+	log_message(str->str);
+	g_string_free(str, TRUE);
+
 	return G_SOURCE_REMOVE;
 }
 
@@ -257,7 +352,9 @@ static gint imap_recv_msg(Session *session, const gchar *msg)
 	log_print("IMAP4<< %s\n", msg);
 	session_set_access_time(SESSION(session));
 
-	if (!strncmp(msg, "XX1 OK", 6)) {
+	if (!msg || msg[0] == ')') {
+		/* fetch done */
+	} else if (!strncmp(msg, "XX1 OK", 6)) {
 		/* inbox selected */
 	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
@@ -266,12 +363,23 @@ static gint imap_recv_msg(Session *session, const gchar *msg)
 		/* notify error*/
 		g_warning("imap-notify: error setting NOTIFY\n");
 		return -1;
+	} else if (!strncmp(msg, "From: ", 4)) {
+		MsgSummary *summary = get_current_session_summary(session);
+		summary->from = g_strdup(msg + 4);
+		msg_summary_show_if_complete(summary);
+	} else if (!strncmp(msg, "Subject: ", 9)) {
+		MsgSummary *summary = get_current_session_summary(session);
+		summary->subject = g_strdup(msg + 9);
+		msg_summary_show_if_complete(summary);
 	} else if (*msg++ != '*' || *msg++ != ' ') {
 		/* unknown */
 	} else if (!strncmp(msg, "STATUS ", 7)) {
 		imap_recv_status(IMAP_SESSION(session), msg + 7);
 	} else if (isdigit(msg[0])) {
-		imap_recv_num(IMAP_SESSION(session), msg);
+		gint num = atoi(msg);
+		msg = strchr(msg, ' ');
+		if (msg++)
+			imap_recv_num(IMAP_SESSION(session), num, msg);
 	}
 
 	debug_print("IMAP NOTIFY receiving on session %p\n", session);
