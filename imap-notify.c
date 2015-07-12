@@ -105,29 +105,12 @@ void plugin_load(void)
 
 	g_print("IMAP NOTIFY plug-in loaded!\n");
 
-	list = folder_get_list();
-	g_print("folder list = %p\n", list);
-	for (cur = list; cur != NULL; cur = cur->next) {
-		Folder *folder = FOLDER(cur->data);
-		gchar *id = folder_get_identifier(folder);
-		g_print("folder id = %s\n", id);
-	}
-
-	ver = syl_plugin_get_prog_version();
-	g_print("program ver: %s\n", ver);
-
-	mainwin = syl_plugin_main_window_get();
-	g_print("mainwin: %p\n", mainwin);
-	syl_plugin_main_window_popup(mainwin);
-
 	g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
 			NULL);
 	g_signal_connect(syl_app_get(), "app-exit", G_CALLBACK(app_exit_cb),
 			NULL);
 	syl_plugin_signal_connect("inc-mail-finished",
 			G_CALLBACK(inc_mail_finished_cb), NULL);
-
-	g_print("imap-notify plug-in loading done\n");
 }
 
 void plugin_unload(void)
@@ -329,13 +312,13 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
-		MsgSummary *summary;
 		/* receiving some headers of a new message */
 		summaries.total_msgs++;
 		if (summaries.len < 5) {
-			session->current_summary = g_new0(MsgSummary, 1);
+			MsgSummary *summary = g_new0(MsgSummary, 1);
+			session->current_summary = summary;
 			summaries.list = g_slist_prepend(summaries.list,
-					session->current_summary);
+					summary);
 		}
 		check_new_debounced(session->folder->inbox);
 	} else {
@@ -352,7 +335,6 @@ static gboolean display_summaries(gpointer item) {
 
 	g_snprintf(title, sizeof title-2, _("Sylpheed: %d new messages"),
 			summaries.total_msgs);
-	strcat(title, "!");
 	str = g_string_new("");
 
 	log_message(title);
@@ -436,7 +418,6 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 			imap_recv_num(session, num, msg);
 	}
 
-	debug_print("IMAP NOTIFY receiving on session %p\n", session);
 	return session_recv_msg(&session->imap_session->session);
 }
 
@@ -450,13 +431,6 @@ static void imap_notify_session_send(IMAPNotifySession *session,
 		g_warning("imap-notify: error sending message\n");
 	}
 }
-
-/*
-	log_print("IMAP notify? %hhu\n", imap_has_capability(session, "NOTIFY"));
-	if (imap_has_capability(session, "NOTIFY")) {
-	    if (imap_cmd_notify(session, "(inboxes (MessageNew FlagChange MessageExpunge))")
-	    != IMAP_SUCCESS) {
-	    */
 
 static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox)
@@ -501,6 +475,8 @@ static void imap_notify_session_init(IMAPSession *session)
 	SESSION(session)->recv_msg = imap_recv_msg;
 
 	sessions_list = g_slist_prepend(sessions_list, notify_session);
+
+	/* TODO: check for NOTIFY capability */
 
 	imap_notify_session_send(notify_session, notify_str);
 }
