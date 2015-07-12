@@ -35,7 +35,8 @@ static SylPluginInfo info = {
 };
 
 static const gchar *notify_str =
-    "XX1 NOTIFY SET "
+    "XX1 SELECT INBOX\n"
+    "XX2 NOTIFY SET "
 	"(selected (MessageNew MessageExpunge)) "
 	"(inboxes (MessageNew))";
     // "XX2 NOTIFY SET (inboxes (MessageNew (uid body.peek[header.fields (from to subject)])))";
@@ -44,11 +45,10 @@ static const gchar *notify_str =
 
 static void init_done_cb(GObject *obj, gpointer data);
 static void inc_mail_start_cb(GObject *obj, PrefsAccount *account);
-// static gboolean check_item_cb(gpointer item);
+static gboolean check_item_cb(gpointer item);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
-static gint session_recv_noop(Session *session, const gchar *msg);
-static IMAPSession *imap_recv_status(IMAPSession *session, const gchar *msg);
+static void imap_recv_status(IMAPSession *session, const gchar *msg);
 static gint parse_status_att_list	(gchar		*str,
 					 gint		*messages,
 					 gint		*recent,
@@ -59,7 +59,6 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 		const gchar *mailbox);
 static IMAPSession *get_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(Session *session);
-static void imap_notify_session_deinit(Session *session);
 
 static GSList *sessions_list = NULL;
 
@@ -104,6 +103,7 @@ void plugin_unload(void)
 	       session_destroy(cur->data);
 
        g_slist_free(sessions_list);
+       g_print("IMAP NOTIFY plugin unloaded\n");
 }
 
 SylPluginInfo *plugin_info(void)
@@ -164,68 +164,25 @@ static gint parse_status_att_list(gchar *str,
 	return 0;
 }
 
-static IMAPSession *swap_session(IMAPSession *session, RemoteFolder *rfolder)
+static void check_new(IMAPSession *session, FolderItem *item)
 {
-	Session *other_session;
-	GSList *cur;
-
-	g_return_val_if_fail(rfolder != NULL, NULL);
-
-	other_session = rfolder->session;
-
-	if (!other_session) {
-		debug_print("IMAP NOTIFY no session to swap with.\n");
-		return NULL;
-	}
-
-	if (other_session == SESSION(session)) {
-		g_warning("imap-notify: same session\n");
-		return NULL;
-	}
-
-	if (imap_is_session_active(IMAP_FOLDER(rfolder))) {
-		g_warning("imap-notify: session busy\n");
-		return NULL;
-	}
-
-	for (cur = sessions_list; cur != NULL; cur = cur->next) {
-		if (cur->data == session) {
-			cur->data = other_session;
-			debug_print("IMAP NOTIFY swapping sessions.\n");
-			break;
-		}
-	}
-
-	imap_notify_session_deinit(SESSION(session));
-	imap_notify_session_init(other_session);
-	rfolder->session = SESSION(session);
-	return IMAP_SESSION(other_session);
-}
-
-static IMAPSession *check_new(IMAPSession *session, FolderItem *item)
-{
-	IMAPSession *other_session;
-
 	g_return_val_if_fail(item != NULL, session);
 	g_return_val_if_fail(item->folder != NULL, session);
 
-	/* Swap the async session for the main session, because the main
-	 * session might now know about the new mail yet */
-	other_session = swap_session(session, REMOTE_FOLDER(item->folder));
-	if (other_session)
-		session = other_session;
-
 	/* Check for new mail */
+	/*
 	(void)syl_plugin_folderview_check_new_item(item);
 	if (item == syl_plugin_summary_get_current_folder()) {
 		syl_plugin_summary_show_queued_msgs();
 		// syl_plugin_summary_update_by_msgnum(messages);
 	}
-	// g_timeout_add_full(G_PRIORITY_LOW, 100, check_item_cb, item, NULL);
-	return session;
+	*/
+	syl_plugin_folderview_check_new_item(item);
+	syl_plugin_folderview_update_item(item, TRUE);
+	// g_timeout_add_full(G_PRIORITY_LOW, 5000, check_item_cb, item, NULL);
 }
 
-static IMAPSession *imap_recv_status(IMAPSession *session, const gchar *msg)
+static void imap_recv_status(IMAPSession *session, const gchar *msg)
 {
 	gchar *str = (gchar *)msg;
 	gchar *mailbox;
@@ -251,7 +208,7 @@ static IMAPSession *imap_recv_status(IMAPSession *session, const gchar *msg)
 
 	if (parse_status_att_list(str, &messages, &recent, &uid_next,
 				  &uid_validity, &unseen) < 0)
-		return session;
+		return;
 
 	debug_print("IMAP NOTIFY status: \"%s\" %d %d %zu %zu %d\n",
 			mailbox, messages, recent, uid_next, uid_validity, unseen);
@@ -263,12 +220,12 @@ static IMAPSession *imap_recv_status(IMAPSession *session, const gchar *msg)
 
 	if (!item) {
 		debug_print("Got STATUS for unknown mailbox %s\n", mailbox);
-		return session;
+		return;
 	}
-	return check_new(session, item);
+	check_new(session, item);
 }
 
-static IMAPSession *imap_recv_num(IMAPSession *session, const gchar *msg)
+static void imap_recv_num(IMAPSession *session, const gchar *msg)
 {
 	gint num;
 
@@ -276,58 +233,45 @@ static IMAPSession *imap_recv_num(IMAPSession *session, const gchar *msg)
 		num = num * 10 + *msg - '0';
 
 	if (*msg++ != ' ')
-		return 0;
+		return;
 
 	if (!strcmp(msg, "EXISTS")) {
 		log_print("IMAP NOTIFY: EXISTS %d\n", num);
 	} else if (!strcmp(msg, "RECENT")) {
 		log_print("IMAP NOTIFY: RECENT %d\n", num);
+		check_new(session, syl_plugin_summary_get_current_folder());
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else {
 		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
-
-	return check_new(session, syl_plugin_summary_get_current_folder());
 }
 
-/*
 static gboolean check_item_cb(gpointer item) {
 	(void)syl_plugin_folderview_check_new_item(item);
 	return G_SOURCE_REMOVE;
 }
-*/
 
 static gint imap_recv_msg(Session *session, const gchar *msg)
 {
-	gint ret = 0;
-
 	log_print("IMAP4<< %s\n", msg);
 	session_set_access_time(SESSION(session));
 
 	if (!strncmp(msg, "XX1 OK", 6)) {
+		/* inbox selected */
+	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
 		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
 	} else if (!strncmp(msg, "XX1 BAD", 7)) {
 		/* notify error*/
 		g_warning("imap-notify: error setting NOTIFY\n");
 		return -1;
-	} else if (!strncmp(msg, "XX2 OK", 6)) {
-		/* session released back to core */
-		session_set_recv_message_notify(session, NULL, NULL);
-		return 0;
 	} else if (*msg++ != '*' || *msg++ != ' ') {
 		/* unknown */
 	} else if (!strncmp(msg, "STATUS ", 7)) {
-		IMAPSession *other_session =
-			imap_recv_status(IMAP_SESSION(session), msg + 7);
-		if (other_session)
-			session = SESSION(other_session);
+		imap_recv_status(IMAP_SESSION(session), msg + 7);
 	} else if (isdigit(msg[0])) {
-		IMAPSession *other_session =
-			imap_recv_num(IMAP_SESSION(session), msg);
-		if (other_session)
-			session = SESSION(other_session);
+		imap_recv_num(IMAP_SESSION(session), msg);
 	}
 
 	debug_print("IMAP NOTIFY receiving on session %p\n", session);
@@ -369,11 +313,6 @@ static void imap_notify_session_init(Session *session)
 	}
 }
 
-static void imap_notify_session_deinit(Session *session)
-{
-	session_send_msg(session, SESSION_MSG_NORMAL, "XX2 NOTIFY NONE");
-}
-
 static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 {
 	IMAPSession *session;
@@ -397,6 +336,7 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 
 	session = IMAP_SESSION(account->folder->session);
 	if (session) {
+		log_message("imap-notify: stealing IMAP session for NOTIFY\n");
 		g_print("imap-notify: stealing IMAP session for NOTIFY\n");
 		sessions_list = g_slist_prepend(sessions_list, session);
 		account->folder->session = NULL;
