@@ -55,6 +55,7 @@ typedef struct _MsgSummary
 typedef struct _IMAPNotifySession
 {
 	IMAPSession *imap_session;
+	Folder *folder;
 	MsgSummary *current_summary;
 	gint noop_tag;
 } IMAPNotifySession;
@@ -66,16 +67,16 @@ static void imap_notify_session_noop_cb(IMAPSession *session);
 static gboolean display_summaries(gpointer item);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
-static void imap_recv_status(IMAPSession *session, const gchar *msg);
+static void imap_recv_status(IMAPNotifySession *session, const gchar *msg);
 static gint parse_status_att_list	(gchar		*str,
 					 gint		*messages,
 					 gint		*recent,
 					 guint32	*uid_next,
 					 guint32	*uid_validity,
 					 gint		*unseen);
-static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
+static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox);
-static IMAPSession *get_imap_notify_session(PrefsAccount *account);
+static void get_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(IMAPSession *session);
 static void msg_summary_show_if_complete(MsgSummary *summary);
 static void summaries_list_free(void);
@@ -83,6 +84,8 @@ static void check_new(FolderItem *item);
 static void check_new_debounced(FolderItem *item);
 
 static void imap_notify_session_destroy(IMAPNotifySession *);
+static void imap_notify_session_send(IMAPNotifySession *session,
+		const gchar *msg);
 static gboolean imap_notify_session_noop(gpointer item);
 
 static GSList *sessions_list = NULL;
@@ -265,12 +268,14 @@ static gboolean check_new_cb(gpointer _item) {
 
 static void check_new_debounced(FolderItem *item)
 {
+	g_return_val_if_fail(item != NULL, NULL);
+
 	if (item->cache_dirty) return;
 	item->cache_dirty = TRUE;
 	g_timeout_add_full(G_PRIORITY_LOW, 50, check_new_cb, item, NULL);
 }
 
-static void imap_recv_status(IMAPSession *session, const gchar *msg)
+static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 {
 	gchar *str = (gchar *)msg;
 	gchar *mailbox;
@@ -318,10 +323,9 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 	if (!strcmp(msg, "EXISTS")) {
 		log_print("IMAP NOTIFY: EXISTS %d\n", num);
 	} else if (!strcmp(msg, "RECENT")) {
-		FolderItem *item;
 		log_print("IMAP NOTIFY: RECENT %d\n", num);
 		if (num == 0) return;
-		check_new_debounced(session->imap_session->folder->inbox);
+		check_new_debounced(session->folder->inbox);
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
@@ -333,7 +337,7 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 			summaries.list = g_slist_prepend(summaries.list,
 					session->current_summary);
 		}
-		check_new_debounced(session->imap_session->folder->inbox);
+		check_new_debounced(session->folder->inbox);
 	} else {
 		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
@@ -375,13 +379,7 @@ static gboolean display_summaries(gpointer item) {
 
 static gboolean imap_notify_session_noop(gpointer item)
 {
-	IMAPNotifySession *session = item;
-
-	if (session_send_msg(SESSION(session->imap_session),
-				SESSION_MSG_NORMAL, "XX3 NOOP") < 0) {
-		g_warning("imap-notify: error sending message\n");
-	}
-
+	imap_notify_session_send(item, "XX3 NOOP");
 	return G_SOURCE_CONTINUE;
 }
 
@@ -430,7 +428,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 	} else if (*msg++ != '*' || *msg++ != ' ') {
 		/* unknown */
 	} else if (!strncmp(msg, "STATUS ", 7)) {
-		imap_recv_status(session->imap_session, msg + 7);
+		imap_recv_status(session, msg + 7);
 	} else if (isdigit(msg[0])) {
 		gint num = atoi(msg);
 		msg = strchr(msg, ' ');
@@ -442,6 +440,17 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 	return session_recv_msg(&session->imap_session->session);
 }
 
+static void imap_notify_session_send(IMAPNotifySession *session,
+		const gchar *msg)
+{
+	log_print("IMAP4>> %s\n", msg);
+
+	if (session_send_msg(SESSION(session->imap_session),
+				SESSION_MSG_NORMAL, msg) < 0) {
+		g_warning("imap-notify: error sending message\n");
+	}
+}
+
 /*
 	log_print("IMAP notify? %hhu\n", imap_has_capability(session, "NOTIFY"));
 	if (imap_has_capability(session, "NOTIFY")) {
@@ -449,7 +458,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 	    != IMAP_SUCCESS) {
 	    */
 
-static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
+static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox)
 {
 
@@ -469,30 +478,46 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 
 static void imap_notify_session_init(IMAPSession *session)
 {
-	IMAPNotifySession *notify_session = g_new0(IMAPNotifySession, 1);
+	GList *cur;
+	Folder *folder = NULL;
+	IMAPNotifySession *notify_session;
+
+	g_return_val_if_fail(session != NULL, NULL);
+
+	for (cur = folder_get_list(); cur != NULL; cur = cur->next) {
+		folder = cur->data;
+		if (folder->account && folder->account->protocol == A_IMAP4 &&
+		    REMOTE_FOLDER(folder)->session == SESSION(session))
+			break;
+	}
+	if (folder == NULL) {
+		g_warning("imap-notify: can't find folder\n");
+		return;
+	}
+
+	notify_session = g_new0(IMAPNotifySession, 1);
 	notify_session->imap_session = session;
+	notify_session->folder = folder;
 	SESSION(session)->recv_msg = imap_recv_msg;
 
 	sessions_list = g_slist_prepend(sessions_list, notify_session);
 
-	if (session_send_msg(SESSION(session), SESSION_MSG_NORMAL,
-				notify_str) < 0) {
-		g_warning("imap-notify: error sending message\n");
-	}
+	imap_notify_session_send(notify_session, notify_str);
 }
 
-static IMAPSession *get_imap_notify_session(PrefsAccount *account)
+static void get_imap_notify_session(PrefsAccount *account)
 {
-	IMAPSession *session;
+	IMAPSession *imap_session;
+	IMAPNotifySession *imap_notify_session;
 	GSList *cur;
 
 	g_return_val_if_fail(account != NULL, NULL);
 	g_return_val_if_fail(account->folder != NULL, NULL);
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
-		session = (IMAPSession *)cur->data;
-		if (session->folder == (Folder *)account->folder)
-			return session;
+		imap_notify_session = (IMAPNotifySession *)cur->data;
+		if (imap_notify_session->folder == (Folder *)account->folder)
+			return;
 	}
 
 	/* No NOTIFY session yet. Try to steal one from the folder */
@@ -500,21 +525,17 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 	if (imap_is_session_active(IMAP_FOLDER(account->folder))) {
 		/* TODO: retry after timeout */
 		g_warning("imap-notify: session is busy\n");
-		return NULL;
+		return;
 	}
 
-	session = IMAP_SESSION(account->folder->session);
-	if (!session) {
+	imap_session = IMAP_SESSION(account->folder->session);
+	if (!imap_session) {
 		g_warning("imap-notify: no session\n");
-		return NULL;
+		return;
 	}
 
 	log_print("IMAP NOTIFY: obtaining IMAP session for account %s\n",
 			account->account_name);
+	imap_notify_session_init(imap_session);
 	account->folder->session = NULL;
-
-	imap_notify_session_init(session);
-
-	return session;
 }
-
