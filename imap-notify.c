@@ -42,16 +42,18 @@ static const gchar *notify_str =
 	"(selected (MessageExpunge MessageNew "
 	    "(uid body.peek[header.fields (from subject)]))) "
 	"(inboxes (MessageNew))";
-    // "XX2 NOTIFY SET (inboxes (MessageNew (uid body.peek[header.fields (from to subject)])))";
-    // "XX2 notify set (inboxes (MessageNew FlagChange MessageExpunge) "
-	// "(uid body.peek[header.fields (from to subject)]))";
 
 typedef struct _MsgSummary
 {
-	Session *session;
 	gchar *subject;
 	gchar *from;
 } MsgSummary;
+
+typedef struct _IMAPNotifySession
+{
+	IMAPSession *imap_session;
+	MsgSummary *current_summary;
+} IMAPNotifySession;
 
 static void init_done_cb(GObject *obj, gpointer data);
 static void app_exit_cb(GObject *obj, gpointer data);
@@ -69,12 +71,13 @@ static gint parse_status_att_list	(gchar		*str,
 static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 		const gchar *mailbox);
 static IMAPSession *get_imap_notify_session(PrefsAccount *account);
-static void imap_notify_session_init(Session *session);
-static MsgSummary *get_current_session_summary(Session *);
+static void imap_notify_session_init(IMAPSession *session);
 static void msg_summary_show_if_complete(MsgSummary *summary);
 static void summaries_list_free(void);
 static void check_new(FolderItem *item);
 static void check_new_debounced(FolderItem *item);
+
+static void imap_notify_session_destroy(IMAPNotifySession *);
 
 static GSList *sessions_list = NULL;
 
@@ -145,7 +148,7 @@ static void app_exit_cb(GObject *obj, gpointer data)
 	g_print("imap-notify: %p: app will exit\n", obj);
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next)
-		session_destroy(cur->data);
+		imap_notify_session_destroy(cur->data);
 	g_slist_free(sessions_list);
 
 	summaries_list_free();
@@ -164,6 +167,12 @@ static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 	}
 }
 
+static void imap_notify_session_destroy(IMAPNotifySession *session)
+{
+	session_destroy(SESSION(session->imap_session));
+	g_free(session);
+}
+
 static void summaries_list_free(void)
 {
 	GSList *cur;
@@ -180,26 +189,6 @@ static void summaries_list_free(void)
 	summaries.list = 0;
 	summaries.total_msgs = 0;
 	summaries.timer = 0;
-}
-
-static MsgSummary *get_current_session_summary(Session *session)
-{
-	MsgSummary *summary = NULL;
-	GSList *cur;
-
-	for (cur = summaries.list; cur != NULL; cur = cur->next) {
-		summary = cur->data;
-		if (summary->session == session)
-			break;
-	}
-
-	if (!summary) {
-		summary = g_new0(MsgSummary, 1);
-		summary->session = session;
-		summaries.list = g_slist_prepend(summaries.list, summary);
-	}
-
-	return summary;
 }
 
 static void msg_summary_show_if_complete(MsgSummary *summary) {
@@ -254,20 +243,10 @@ static gint parse_status_att_list(gchar *str,
 
 static void check_new(FolderItem *item)
 {
-	/* Check for new mail */
-	/*
-	g_return_val_if_fail(item != NULL, session);
-	g_return_val_if_fail(item->folder != NULL, session);
-
-	(void)syl_plugin_folderview_check_new_item(item);
-	if (item == syl_plugin_summary_get_current_folder()) {
-		syl_plugin_summary_show_queued_msgs();
-		// syl_plugin_summary_update_by_msgnum(messages);
-	}
-	*/
+	/* Update folder view */
 	syl_plugin_folderview_check_new_item(item);
+	/* Update summary */
 	syl_plugin_folderview_update_item(item, TRUE);
-	// g_timeout_add_full(G_PRIORITY_LOW, 5000, check_item_cb, item, NULL);
 }
 
 static gboolean check_new_cb(gpointer _item) {
@@ -326,7 +305,8 @@ static void imap_recv_status(IMAPSession *session, const gchar *msg)
 		check_new_debounced(item);
 }
 
-static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
+static void imap_recv_num(IMAPNotifySession *session, gint num,
+		const gchar *msg)
 {
 	if (!strcmp(msg, "EXISTS")) {
 		log_print("IMAP NOTIFY: EXISTS %d\n", num);
@@ -334,16 +314,19 @@ static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
 		FolderItem *item;
 		log_print("IMAP NOTIFY: RECENT %d\n", num);
 		if (num == 0) return;
-		check_new_debounced(session->folder->inbox);
+		check_new_debounced(session->imap_session->folder->inbox);
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
 		MsgSummary *summary;
 		/* receiving some headers of a new message */
 		summaries.total_msgs++;
-		if (summaries.len < 5)
-			get_current_session_summary(SESSION(session));
-		check_new_debounced(session->folder->inbox);
+		if (summaries.len < 5) {
+			session->current_summary = g_new0(MsgSummary, 1);
+			summaries.list = g_slist_prepend(summaries.list,
+					session->current_summary);
+		}
+		check_new_debounced(session->imap_session->folder->inbox);
 	} else {
 		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
@@ -383,10 +366,19 @@ static gboolean display_summaries(gpointer item) {
 	return G_SOURCE_REMOVE;
 }
 
-static gint imap_recv_msg(Session *session, const gchar *msg)
+static gint imap_recv_msg(Session *_session, const gchar *msg)
 {
+	IMAPNotifySession *session = NULL;
+	GSList *cur;
+
+	for (cur = sessions_list; cur != NULL; cur = cur->next) {
+		session = cur->data;
+		if (session->imap_session == IMAP_SESSION(_session))
+			break;
+	}
+	g_return_val_if_fail(session != NULL, NULL);
+
 	log_print("IMAP4<< %s\n", msg);
-	session_set_access_time(SESSION(session));
 
 	if (!msg || msg[0] == ')') {
 		/* fetch done */
@@ -400,26 +392,30 @@ static gint imap_recv_msg(Session *session, const gchar *msg)
 		g_warning("imap-notify: error setting NOTIFY\n");
 		return -1;
 	} else if (!strncmp(msg, "From: ", 4)) {
-		MsgSummary *summary = get_current_session_summary(session);
-		summary->from = g_strdup(msg + 4);
-		msg_summary_show_if_complete(summary);
+		MsgSummary *summary = session->current_summary;
+		if (summary) {
+			summary->from = g_strdup(msg + 4);
+			msg_summary_show_if_complete(summary);
+		}
 	} else if (!strncmp(msg, "Subject: ", 9)) {
-		MsgSummary *summary = get_current_session_summary(session);
-		summary->subject = g_strdup(msg + 9);
-		msg_summary_show_if_complete(summary);
+		MsgSummary *summary = session->current_summary;
+		if (summary) {
+			summary->subject = g_strdup(msg + 9);
+			msg_summary_show_if_complete(summary);
+		}
 	} else if (*msg++ != '*' || *msg++ != ' ') {
 		/* unknown */
 	} else if (!strncmp(msg, "STATUS ", 7)) {
-		imap_recv_status(IMAP_SESSION(session), msg + 7);
+		imap_recv_status(session->imap_session, msg + 7);
 	} else if (isdigit(msg[0])) {
 		gint num = atoi(msg);
 		msg = strchr(msg, ' ');
 		if (msg++)
-			imap_recv_num(IMAP_SESSION(session), num, msg);
+			imap_recv_num(session, num, msg);
 	}
 
 	debug_print("IMAP NOTIFY receiving on session %p\n", session);
-	return session_recv_msg(session);
+	return session_recv_msg(&session->imap_session->session);
 }
 
 /*
@@ -447,11 +443,16 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 	return folder_find_item_from_identifier(buf);
 }
 
-static void imap_notify_session_init(Session *session)
+static void imap_notify_session_init(IMAPSession *session)
 {
-	session->recv_msg = imap_recv_msg;
+	IMAPNotifySession *notify_session = g_new0(IMAPNotifySession, 1);
+	notify_session->imap_session = session;
+	SESSION(session)->recv_msg = imap_recv_msg;
 
-	if (session_send_msg(session, SESSION_MSG_NORMAL, notify_str) < 0) {
+	sessions_list = g_slist_prepend(sessions_list, notify_session);
+
+	if (session_send_msg(SESSION(session), SESSION_MSG_NORMAL,
+				notify_str) < 0) {
 		g_warning("imap-notify: error sending message\n");
 	}
 }
@@ -486,10 +487,9 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 
 	log_print("IMAP NOTIFY: obtaining IMAP session for account %s\n",
 			account->account_name);
-	sessions_list = g_slist_prepend(sessions_list, session);
 	account->folder->session = NULL;
 
-	imap_notify_session_init(SESSION(session));
+	imap_notify_session_init(session);
 
 	return session;
 }
