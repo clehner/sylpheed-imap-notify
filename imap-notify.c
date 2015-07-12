@@ -70,7 +70,10 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 static IMAPSession *get_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(Session *session);
 static MsgSummary *get_current_session_summary(Session *);
+static void msg_summary_show_if_complete(MsgSummary *summary);
 static void summaries_list_free(void);
+static void check_new(FolderItem *item);
+static void check_new_debounced(FolderItem *item);
 
 static GSList *sessions_list = NULL;
 
@@ -161,6 +164,9 @@ static void summaries_list_free(void)
 
 	g_slist_free(summaries.list);
 	summaries.len = 0;
+	summaries.list = 0;
+	summaries.total_msgs = 0;
+	summaries.timer = 0;
 }
 
 static MsgSummary *get_current_session_summary(Session *session)
@@ -183,7 +189,7 @@ static MsgSummary *get_current_session_summary(Session *session)
 	return summary;
 }
 
-void msg_summary_show_if_complete(MsgSummary *summary) {
+static void msg_summary_show_if_complete(MsgSummary *summary) {
 	if (!summary->from || !summary->subject) {
 		debug_print("summary not ready. %s %s\n", summary->from,
 				summary->subject);
@@ -192,7 +198,7 @@ void msg_summary_show_if_complete(MsgSummary *summary) {
 	/* debounce showing the notification */
 	if (summaries.timer)
 		g_source_remove(summaries.timer);
-	summaries.timer = g_timeout_add_full(G_PRIORITY_LOW, 100,
+	summaries.timer = g_timeout_add_full(G_PRIORITY_LOW, 80,
 			display_summaries, NULL, NULL);
 }
 
@@ -233,13 +239,13 @@ static gint parse_status_att_list(gchar *str,
 	return 0;
 }
 
-static void check_new(IMAPSession *session, FolderItem *item)
+static void check_new(FolderItem *item)
 {
+	/* Check for new mail */
+	/*
 	g_return_val_if_fail(item != NULL, session);
 	g_return_val_if_fail(item->folder != NULL, session);
 
-	/* Check for new mail */
-	/*
 	(void)syl_plugin_folderview_check_new_item(item);
 	if (item == syl_plugin_summary_get_current_folder()) {
 		syl_plugin_summary_show_queued_msgs();
@@ -249,6 +255,20 @@ static void check_new(IMAPSession *session, FolderItem *item)
 	syl_plugin_folderview_check_new_item(item);
 	syl_plugin_folderview_update_item(item, TRUE);
 	// g_timeout_add_full(G_PRIORITY_LOW, 5000, check_item_cb, item, NULL);
+}
+
+static gboolean check_new_cb(gpointer _item) {
+	FolderItem *item = _item;
+	item->cache_dirty = FALSE;
+	check_new(item);
+	return G_SOURCE_REMOVE;
+}
+
+static void check_new_debounced(FolderItem *item)
+{
+	if (item->cache_dirty) return;
+	item->cache_dirty = TRUE;
+	g_timeout_add_full(G_PRIORITY_LOW, 50, check_new_cb, item, NULL);
 }
 
 static void imap_recv_status(IMAPSession *session, const gchar *msg)
@@ -282,16 +302,13 @@ static void imap_recv_status(IMAPSession *session, const gchar *msg)
 	debug_print("IMAP NOTIFY status: \"%s\" %d %d %zu %zu %d\n",
 			mailbox, messages, recent, uid_next, uid_validity, unseen);
 
-	// syl_plugin_notification_window_open("IMAP NOTIFY: mailbox", mailbox, 10);
-	log_print("IMAP NOTIFY: mailbox %s\n", mailbox);
-
 	item = get_folder_item_for_mailbox(session, mailbox);
 
 	if (!item) {
 		debug_print("Got STATUS for unknown mailbox %s\n", mailbox);
 		return;
 	}
-	check_new(session, item);
+	check_new_debounced(item);
 }
 
 static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
@@ -299,9 +316,10 @@ static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
 	if (!strcmp(msg, "EXISTS")) {
 		log_print("IMAP NOTIFY: EXISTS %d\n", num);
 	} else if (!strcmp(msg, "RECENT")) {
+		FolderItem *item;
 		log_print("IMAP NOTIFY: RECENT %d\n", num);
 		if (num == 0) return;
-		check_new(session, syl_plugin_summary_get_current_folder());
+		check_new_debounced(session->folder->inbox);
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
@@ -310,6 +328,7 @@ static void imap_recv_num(IMAPSession *session, gint num, const gchar *msg)
 		summaries.total_msgs++;
 		if (summaries.len < 5)
 			get_current_session_summary(SESSION(session));
+		check_new_debounced(session->folder->inbox);
 	} else {
 		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
@@ -319,6 +338,8 @@ static gboolean display_summaries(gpointer item) {
 	GSList *cur;
 	gchar title[1024];
 	GString *str;
+
+	summaries.timer = 0;
 
 	g_snprintf(title, sizeof title-2, _("Sylpheed: %d new messages"),
 			summaries.total_msgs);
@@ -341,8 +362,8 @@ static gboolean display_summaries(gpointer item) {
 	syl_plugin_notification_window_open(title, str->str,
 			prefs_common.notify_window_period);
 
-	log_message(str->str);
 	g_string_free(str, TRUE);
+	summaries_list_free();
 
 	return G_SOURCE_REMOVE;
 }
@@ -408,7 +429,6 @@ static FolderItem *get_folder_item_for_mailbox(IMAPSession *session,
 			session->folder->account->account_name, mailbox);
 	buf[sizeof buf-1] = '\0';
 
-	debug_print("finding folder %s\n", buf);
 	return folder_find_item_from_identifier(buf);
 }
 
@@ -443,14 +463,17 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 	}
 
 	session = IMAP_SESSION(account->folder->session);
-	if (session) {
-		log_message("imap-notify: stealing IMAP session for NOTIFY\n");
-		g_print("imap-notify: stealing IMAP session for NOTIFY\n");
-		sessions_list = g_slist_prepend(sessions_list, session);
-		account->folder->session = NULL;
-
-		imap_notify_session_init(SESSION(session));
+	if (!session) {
+		g_warning("imap-notify: no session\n");
+		return NULL;
 	}
+
+	log_message("imap-notify: stealing IMAP session for NOTIFY\n");
+	g_print("imap-notify: stealing IMAP session for NOTIFY\n");
+	sessions_list = g_slist_prepend(sessions_list, session);
+	account->folder->session = NULL;
+
+	imap_notify_session_init(SESSION(session));
 
         return session;
 }
