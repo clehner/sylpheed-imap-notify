@@ -54,8 +54,8 @@ typedef struct _MsgSummary
 } MsgSummary;
 
 static void init_done_cb(GObject *obj, gpointer data);
-static void inc_mail_start_cb(GObject *obj, PrefsAccount *account);
 static void app_exit_cb(GObject *obj, gpointer data);
+static void inc_mail_finished_cb(GObject *obj, gint new_messages);
 static gboolean display_summaries(gpointer item);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
@@ -110,10 +110,10 @@ void plugin_load(void)
 
        g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
                         NULL);
-       syl_plugin_signal_connect("inc-mail-start",
-                                 G_CALLBACK(inc_mail_start_cb), NULL);
        g_signal_connect(syl_app_get(), "app-exit", G_CALLBACK(app_exit_cb),
                         NULL);
+       syl_plugin_signal_connect("inc-mail-finished",
+                                 G_CALLBACK(inc_mail_finished_cb), NULL);
 
        g_print("imap-notify plug-in loading done\n");
 }
@@ -151,10 +151,17 @@ static void app_exit_cb(GObject *obj, gpointer data)
        summaries_list_free();
 }
 
-static void inc_mail_start_cb(GObject *obj, PrefsAccount *account)
+static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 {
-       IMAPSession *session = get_imap_notify_session(account);
-       // syl_plugin_notification_window_open("IMAP NOTIFY", "starting", 6);
+	GList *cur;
+
+	for (cur = folder_get_list(); cur != NULL; cur = cur->next) {
+		Folder *folder = cur->data;
+		PrefsAccount *account = folder->account;
+		if (account && account->protocol == A_IMAP4 &&
+				account->folder->session)
+			get_imap_notify_session(account);
+	}
 }
 
 static void summaries_list_free(void)
@@ -453,6 +460,7 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 	GSList *cur;
 
 	g_return_val_if_fail(account != NULL, NULL);
+	g_return_val_if_fail(account->folder != NULL, NULL);
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
 		session = (IMAPSession *)cur->data;
@@ -474,8 +482,8 @@ static IMAPSession *get_imap_notify_session(PrefsAccount *account)
 		return NULL;
 	}
 
-	log_message("imap-notify: stealing IMAP session for NOTIFY\n");
-	g_print("imap-notify: stealing IMAP session for NOTIFY\n");
+	log_print("IMAP NOTIFY: obtaining IMAP session for account %s\n",
+			account->account_name);
 	sessions_list = g_slist_prepend(sessions_list, session);
 	account->folder->session = NULL;
 
