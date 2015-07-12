@@ -2,7 +2,7 @@ NAME = imap-notify
 LIB = $(NAME).so
 PREFIX ?= /usr/local
 
-CFLAGS += `pkg-config --cflags gtk+-2.0` -fPIC \
+CFLAGS += `pkg-config --cflags gtk+-2.0` -fPIC -g \
 		  -I$(PREFIX)/include/sylpheed \
 		  -I$(PREFIX)/include/sylpheed/sylph
 LDFLAGS += `pkg-config --libs gtk+-2.0` -L$(PREFIX)/lib \
