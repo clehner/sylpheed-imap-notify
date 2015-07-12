@@ -43,6 +43,9 @@ static const gchar *notify_str =
 	    "(uid body.peek[header.fields (from subject)]))) "
 	"(inboxes (MessageNew))";
 
+
+static const gint noop_interval = 60 * 29;
+
 typedef struct _MsgSummary
 {
 	gchar *subject;
@@ -53,11 +56,13 @@ typedef struct _IMAPNotifySession
 {
 	IMAPSession *imap_session;
 	MsgSummary *current_summary;
+	gint noop_tag;
 } IMAPNotifySession;
 
 static void init_done_cb(GObject *obj, gpointer data);
 static void app_exit_cb(GObject *obj, gpointer data);
 static void inc_mail_finished_cb(GObject *obj, gint new_messages);
+static void imap_notify_session_noop_cb(IMAPSession *session);
 static gboolean display_summaries(gpointer item);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
@@ -78,6 +83,7 @@ static void check_new(FolderItem *item);
 static void check_new_debounced(FolderItem *item);
 
 static void imap_notify_session_destroy(IMAPNotifySession *);
+static gboolean imap_notify_session_noop(gpointer item);
 
 static GSList *sessions_list = NULL;
 
@@ -170,6 +176,7 @@ static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 static void imap_notify_session_destroy(IMAPNotifySession *session)
 {
 	session_destroy(SESSION(session->imap_session));
+	g_source_remove(session->noop_tag);
 	g_free(session);
 }
 
@@ -366,6 +373,18 @@ static gboolean display_summaries(gpointer item) {
 	return G_SOURCE_REMOVE;
 }
 
+static gboolean imap_notify_session_noop(gpointer item)
+{
+	IMAPNotifySession *session = item;
+
+	if (session_send_msg(SESSION(session->imap_session),
+				SESSION_MSG_NORMAL, "XX3 NOOP") < 0) {
+		g_warning("imap-notify: error sending message\n");
+	}
+
+	return G_SOURCE_CONTINUE;
+}
+
 static gint imap_recv_msg(Session *_session, const gchar *msg)
 {
 	IMAPNotifySession *session = NULL;
@@ -386,7 +405,12 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		/* inbox selected */
 	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
+		session->noop_tag = g_timeout_add_seconds_full(
+				G_PRIORITY_LOW, noop_interval,
+				imap_notify_session_noop, session, NULL);
 		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
+	} else if (!strncmp(msg, "XX3 OK", 6)) {
+		/* noop ok */
 	} else if (!strncmp(msg, "XX1 BAD", 7)) {
 		/* notify error*/
 		g_warning("imap-notify: error setting NOTIFY\n");
