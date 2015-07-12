@@ -333,7 +333,7 @@ static gboolean display_summaries(gpointer item) {
 
 	summaries.timer = 0;
 
-	g_snprintf(title, sizeof title-2, _("Sylpheed: %d new messages"),
+	g_snprintf(title, sizeof title, _("Sylpheed: %d new messages"),
 			summaries.total_msgs);
 	str = g_string_new("");
 
@@ -443,9 +443,8 @@ static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		if (*str == '.')
 			*str = '/';
 
-	snprintf(buf, sizeof buf, "#imap/%s/%s",
+	g_snprintf(buf, sizeof buf, "#imap/%s/%s",
 			session->folder->account->account_name, mailbox);
-	buf[sizeof buf-1] = '\0';
 
 	return folder_find_item_from_identifier(buf);
 }
