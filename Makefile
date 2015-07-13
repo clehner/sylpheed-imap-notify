@@ -1,6 +1,9 @@
 NAME = imap-notify
 LIB = $(NAME).so
+OBJ = $(NAME).o
+
 PREFIX ?= /usr/local
+PLUGINS_DIR ?= $(PREFIX)/lib/sylpheed/plugins
 
 CFLAGS += `pkg-config --cflags gtk+-2.0` -fPIC -g \
 		  -I$(PREFIX)/include/sylpheed \
@@ -15,11 +18,14 @@ ifdef SYLPHEED_DIR
 			   -L$(SYLPHEED_DIR)/libsylph/.libs
 endif
 
-$(LIB): $(NAME).o
+$(LIB): $(OBJ)
 	$(CC) $(LDFLAGS) -shared $< -o $@
 
-install: $(LIB)
-	cp $(LIB) ~/.sylpheed-2.0/plugins/
+$(PLUGINS_DIR):
+	mkdir -p $@
+
+install: $(LIB) | $(PLUGINS_DIR)
+	cp $(LIB) $(PLUGINS_DIR)
 
 clean:
 	rm -f *.o $(LIB)
