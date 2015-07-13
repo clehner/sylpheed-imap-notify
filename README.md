@@ -72,6 +72,7 @@ make install
 - Add an account preference for using NOTIFY or not
 - Show fine-grained updates without having to reload the entire message summary
   view.
+- Add internationalization
 
 # Why a plugin
 

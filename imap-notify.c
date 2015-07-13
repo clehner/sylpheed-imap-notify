@@ -29,8 +29,8 @@
 #include "prefs_common.h"
 
 static SylPluginInfo info = {
-	"IMAP NOTIFY",
-	"0.0.1",
+	"sylph-imap-notify",
+	"1.0.0",
 	"Charles Lehner",
 	"IMAP NOTIFY implementation for Sylpheed"
 };
@@ -63,7 +63,6 @@ typedef struct _IMAPNotifySession
 	gint noop_tag;
 } IMAPNotifySession;
 
-static void init_done_cb(GObject *obj, gpointer data);
 static void inc_mail_finished_cb(GObject *obj, gint new_messages);
 static void imap_notify_session_noop_cb(IMAPSession *session);
 static gboolean display_summaries(gpointer item);
@@ -107,8 +106,6 @@ void plugin_load(void)
 
 	g_print("IMAP NOTIFY plug-in loaded!\n");
 
-	g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
-			NULL);
 	syl_plugin_signal_connect("inc-mail-finished",
 			G_CALLBACK(inc_mail_finished_cb), NULL);
 }
@@ -134,11 +131,6 @@ SylPluginInfo *plugin_info(void)
 gint plugin_interface_version(void)
 {
 	return SYL_PLUGIN_INTERFACE_VERSION;
-}
-
-static void init_done_cb(GObject *obj, gpointer data)
-{
-	g_print("imap-notify: %p: app init done\n", obj);
 }
 
 static void inc_mail_finished_cb(GObject *obj, gint new_messages)
