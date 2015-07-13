@@ -344,6 +344,28 @@ static gboolean display_summaries(gpointer item) {
 	g_string_free(str, TRUE);
 	summaries_list_free();
 
+	/* play sound */
+	if (prefs_common.enable_newmsg_notify_sound &&
+	    prefs_common.newmsg_notify_sound) {
+		play_sound(prefs_common.newmsg_notify_sound, TRUE);
+	}
+
+	/* execute command */
+	if (prefs_common.enable_newmsg_notify &&
+	    prefs_common.newmsg_notify_cmd) {
+		gchar buf[1024];
+
+		if (str_find_format_times
+			(prefs_common.newmsg_notify_cmd, 'd') == 1)
+			g_snprintf(buf, sizeof(buf),
+				   prefs_common.newmsg_notify_cmd,
+				   summaries.total_msgs);
+		else
+			strncpy2(buf, prefs_common.newmsg_notify_cmd,
+				 sizeof(buf));
+		execute_command_line(buf, TRUE);
+	}
+
 	return G_SOURCE_REMOVE;
 }
 
