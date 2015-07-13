@@ -8,6 +8,13 @@ CFLAGS += `pkg-config --cflags gtk+-2.0` -fPIC -g \
 LDFLAGS += `pkg-config --libs gtk+-2.0` -L$(PREFIX)/lib \
 		   -lsylpheed-plugin-0 -lsylph-0
 
+ifdef SYLPHEED_DIR
+	CFLAGS += -I$(SYLPHEED_DIR)/libsylph \
+			  -I$(SYLPHEED_DIR)/src
+	LDFLAGS += -L$(SYLPHEED_DIR)/src/.libs \
+			   -L$(SYLPHEED_DIR)/libsylph/.libs
+endif
+
 $(LIB): $(NAME).o
 	$(CC) $(LDFLAGS) -shared $< -o $@
 

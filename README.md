@@ -27,6 +27,27 @@ implemented. (It's author, Arnt Gulbrandsen, [said][Arnt] "it should have been g
 
 GPLv3+
 
+## Usage
+
+Compile Sylpheed:
+
+```
+svn checkout svn://sylpheed.sraoss.jp/sylpheed/trunk sylpheed
+./autogen.sh
+./configure
+make
+```
+
+Compile and install the plugin:
+
+```
+cd plugin
+git clone https://github.com/clehner/sylph-imap-notify
+cd sylph-imap-notify
+make SYLPHEED_DIR=../../
+make install
+```
+
 ## Current issues
 
 - THe IMAP NOTIFY listener does not start for an IMAP account until the account
