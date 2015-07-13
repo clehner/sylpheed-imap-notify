@@ -64,7 +64,6 @@ typedef struct _IMAPNotifySession
 } IMAPNotifySession;
 
 static void init_done_cb(GObject *obj, gpointer data);
-static void app_exit_cb(GObject *obj, gpointer data);
 static void inc_mail_finished_cb(GObject *obj, gint new_messages);
 static void imap_notify_session_noop_cb(IMAPSession *session);
 static gboolean display_summaries(gpointer item);
@@ -110,15 +109,21 @@ void plugin_load(void)
 
 	g_signal_connect(syl_app_get(), "init-done", G_CALLBACK(init_done_cb),
 			NULL);
-	g_signal_connect(syl_app_get(), "app-exit", G_CALLBACK(app_exit_cb),
-			NULL);
 	syl_plugin_signal_connect("inc-mail-finished",
 			G_CALLBACK(inc_mail_finished_cb), NULL);
 }
 
 void plugin_unload(void)
 {
+	GSList *cur;
+
 	g_print("IMAP NOTIFY plugin unloaded\n");
+
+	for (cur = sessions_list; cur != NULL; cur = cur->next)
+		imap_notify_session_destroy(cur->data);
+	g_slist_free(sessions_list);
+
+	summaries_list_free();
 }
 
 SylPluginInfo *plugin_info(void)
@@ -134,19 +139,6 @@ gint plugin_interface_version(void)
 static void init_done_cb(GObject *obj, gpointer data)
 {
 	g_print("imap-notify: %p: app init done\n", obj);
-}
-
-static void app_exit_cb(GObject *obj, gpointer data)
-{
-	GSList *cur;
-
-	g_print("imap-notify: %p: app will exit\n", obj);
-
-	for (cur = sessions_list; cur != NULL; cur = cur->next)
-		imap_notify_session_destroy(cur->data);
-	g_slist_free(sessions_list);
-
-	summaries_list_free();
 }
 
 static void inc_mail_finished_cb(GObject *obj, gint new_messages)
