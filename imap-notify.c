@@ -35,13 +35,17 @@ static SylPluginInfo info = {
 	"IMAP NOTIFY implementation for Sylpheed"
 };
 
-static const gchar *notify_str =
-    "XX1 SELECT INBOX\n"
-    "XX2 NOTIFY SET "
-	"(selected (MessageExpunge MessageNew "
+static const gchar
+    *notify_str =
+	"XX1 SELECT INBOX\n"
+	"XX2 NOTIFY SET "
+	    "(selected (MessageExpunge MessageNew "
 	    "(uid body.peek[header.fields (from subject)]))) "
-	"(inboxes (MessageNew))";
-
+	    "(inboxes (MessageNew))",
+    *notify_str_no_summaries =
+	"XX1 CLOSE\n"
+	"XX2 NOTIFY SET "
+	    "(inboxes (MessageNew))";
 
 static const gint noop_interval = 60 * 29;
 
@@ -313,7 +317,8 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
 		/* receiving some headers of a new message */
 		summaries.total_msgs++;
-		if (summaries.len < 5) {
+		if (prefs_common.enable_newmsg_notify_window &&
+				summaries.len < 5) {
 			MsgSummary *summary = g_new0(MsgSummary, 1);
 			session->current_summary = summary;
 			summaries.list = g_slist_prepend(summaries.list,
@@ -396,13 +401,13 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		return -1;
 	} else if (!strncmp(msg, "From: ", 4)) {
 		MsgSummary *summary = session->current_summary;
-		if (summary) {
+		if (summary && prefs_common.enable_newmsg_notify_window) {
 			summary->from = g_strdup(msg + 4);
 			msg_summary_show_if_complete(summary);
 		}
 	} else if (!strncmp(msg, "Subject: ", 9)) {
 		MsgSummary *summary = session->current_summary;
-		if (summary) {
+		if (summary && prefs_common.enable_newmsg_notify_window) {
 			summary->subject = g_strdup(msg + 9);
 			msg_summary_show_if_complete(summary);
 		}
@@ -476,7 +481,9 @@ static void imap_notify_session_init(IMAPSession *session)
 
 	/* TODO: check for NOTIFY capability */
 
-	imap_notify_session_send(notify_session, notify_str);
+	imap_notify_session_send(notify_session,
+			prefs_common.enable_newmsg_notify_window ?
+			notify_str : notify_str_no_summaries);
 }
 
 static void get_imap_notify_session(PrefsAccount *account)
