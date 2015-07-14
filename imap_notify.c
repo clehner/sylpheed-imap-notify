@@ -178,6 +178,7 @@ static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 
 static void imap_notify_session_destroy(IMAPNotifySession *session)
 {
+	sessions_list = g_slist_remove(sessions_list, session);
 	session_destroy(SESSION(session->imap_session));
 	g_source_remove(session->noop_tag);
 	g_free(session);
@@ -451,6 +452,9 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		/* unknown */
 	} else if (!strncmp(msg, "STATUS ", 7)) {
 		imap_recv_status(session, msg + 7);
+	} else if (!strncmp(msg, "BYE ", 7)) {
+		imap_notify_session_destroy(session);
+		return 0;
 	} else if (isdigit(msg[0])) {
 		gint num = atoi(msg);
 		msg = strchr(msg, ' ');
@@ -525,12 +529,22 @@ static void imap_notify_session_init(IMAPSession *session)
 static gboolean has_imap_notify_session(PrefsAccount *account)
 {
 	GSList *cur;
-	IMAPNotifySession *imap_notify_session;
+	IMAPNotifySession *notify_session = NULL;
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
-		imap_notify_session = (IMAPNotifySession *)cur->data;
-		if (imap_notify_session->folder == (Folder *)account->folder)
-			return TRUE;
+		notify_session = (IMAPNotifySession *)cur->data;
+		if (notify_session->folder == (Folder *)account->folder)
+			break;
+	}
+
+	if (notify_session) {
+		if (notify_session->imap_session->session.state ==
+				SESSION_EOF) {
+			debug_print("IMAP NOTIFY session ended\n");
+			imap_notify_session_destroy(notify_session);
+			return FALSE;
+		}
+		return TRUE;
 	}
 
 	return FALSE;
