@@ -1,4 +1,4 @@
-NAME = imap-notify
+NAME = imap_notify
 LIB = $(NAME).so
 OBJ = $(NAME).o
 
@@ -26,6 +26,9 @@ $(PLUGINS_DIR):
 
 install: $(LIB) | $(PLUGINS_DIR)
 	cp $(LIB) $(PLUGINS_DIR)
+
+uninstall:
+	rm $(PLUGINS_DIR)/$(LIB)
 
 clean:
 	rm -f *.o $(LIB)

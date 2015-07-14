@@ -29,8 +29,8 @@
 #include "prefs_common.h"
 
 static SylPluginInfo info = {
-	"sylph-imap-notify",
-	"1.0.0",
+	"IMAP NOTIFY Plug-in",
+	"0.1.0",
 	"Charles Lehner",
 	"IMAP NOTIFY implementation for Sylpheed"
 };
