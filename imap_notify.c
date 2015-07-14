@@ -37,15 +37,15 @@ static SylPluginInfo info = {
 
 static const gchar
     *notify_str =
-	"XX1 SELECT INBOX\n"
-	"XX2 NOTIFY SET "
+	"XX1 NOTIFY SET "
 	    "(selected (MessageExpunge MessageNew "
 	    "(uid body.peek[header.fields (from subject)]))) "
-	    "(inboxes (MessageNew))",
+	    "(inboxes (MessageNew))\n"
+	"XX2 SELECT INBOX",
     *notify_str_no_summaries =
-	"XX1 CLOSE\n"
-	"XX2 NOTIFY SET "
-	    "(inboxes (MessageNew))";
+	"XX1 NOTIFY SET "
+	    "(inboxes (MessageNew))\n"
+	"XX2 CLOSE";
 
 static const gint noop_interval = 60 * 29;
 
@@ -77,7 +77,8 @@ static gint parse_status_att_list	(gchar		*str,
 					 gint		*unseen);
 static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox);
-static void get_imap_notify_session(PrefsAccount *account);
+static IMAPNotifySession *get_imap_notify_session(PrefsAccount *account);
+static void steal_imap_notify_session(PrefsAccount *account);
 static gboolean has_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(IMAPSession *session);
 static void msg_summary_show_if_complete(MsgSummary *summary);
@@ -128,9 +129,8 @@ void plugin_unload(void)
 
 	g_print("IMAP NOTIFY plugin unloaded\n");
 
-	for (cur = sessions_list; cur != NULL; cur = cur->next)
-		imap_notify_session_destroy(cur->data);
-	g_slist_free(sessions_list);
+	g_slist_free_full(sessions_list,
+			(GDestroyNotify)imap_notify_session_destroy);
 
 	imap_get_class()->get_msg_list = original_get_msg_list;
 
@@ -151,11 +151,11 @@ static gboolean account_cb(gpointer data)
 {
 	PrefsAccount *account = data;
 
-	if (syl_plugin_summary_is_locked())
+	if (syl_plugin_summary_is_locked() || syl_plugin_inc_is_active())
 		return G_SOURCE_CONTINUE;
 
 	if (!has_imap_notify_session(account))
-		get_imap_notify_session(account);
+		steal_imap_notify_session(account);
 
 	return G_SOURCE_REMOVE;
 }
@@ -186,7 +186,7 @@ static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 		if (account && account->protocol == A_IMAP4 &&
 				account->folder->session &&
 				!has_imap_notify_session(account))
-			get_imap_notify_session(account);
+			steal_imap_notify_session(account);
 	}
 }
 
@@ -198,20 +198,18 @@ static void imap_notify_session_destroy(IMAPNotifySession *session)
 	g_free(session);
 }
 
+static void summary_free(MsgSummary *summary)
+{
+	g_free(summary->from);
+	g_free(summary->subject);
+	g_free(summary);
+}
+
 static void summaries_list_free(void)
 {
-	GSList *cur;
-
-	for (cur = summaries.list; cur != NULL; cur = cur->next) {
-		MsgSummary *summary = cur->data;
-		g_free(summary->from);
-		g_free(summary->subject);
-		g_free(summary);
-	}
-
-	g_slist_free(summaries.list);
+	g_slist_free_full(summaries.list, (GDestroyNotify)summary_free);
+	summaries.list = NULL;
 	summaries.len = 0;
-	summaries.list = 0;
 	summaries.total_msgs = 0;
 	summaries.timer = 0;
 }
@@ -422,34 +420,30 @@ static gboolean imap_notify_session_noop(gpointer item)
 
 static gint imap_recv_msg(Session *_session, const gchar *msg)
 {
-	IMAPNotifySession *session = NULL;
+	IMAPNotifySession *session = _session->data;
 	GSList *cur;
-
-	for (cur = sessions_list; cur != NULL; cur = cur->next) {
-		session = cur->data;
-		if (session->imap_session == IMAP_SESSION(_session))
-			break;
-	}
-	g_return_val_if_fail(session != NULL, NULL);
 
 	log_print("IMAP4<< %s\n", msg);
 
 	if (!msg || msg[0] == ')') {
 		/* fetch done */
 	} else if (!strncmp(msg, "XX1 OK", 6)) {
-		/* inbox selected */
-	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
 		session->noop_tag = g_timeout_add_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_noop, session, NULL);
 		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
+	} else if (!strncmp(msg, "XX2 OK", 6)) {
+		/* inbox selected */
 	} else if (!strncmp(msg, "XX3 OK", 6)) {
 		/* noop ok */
 	} else if (!strncmp(msg, "XX1 BAD", 7)) {
-		/* notify error*/
-		g_warning("imap-notify: error setting NOTIFY\n");
-		return -1;
+		g_warning("IMAP NOTIFY not supported by %s\n",
+			session->folder->account->recv_server);
+		/* keep the session existing so we know not to reconnect */
+		return 0;
+	} else if (!strncmp(msg, "XX2 BAD", 7)) {
+		debug_print("IMAP NOTIFY: error selecting/closing mailbox\n");
 	} else if (!strncmp(msg, "From: ", 4)) {
 		MsgSummary *summary = session->current_summary;
 		if (summary && prefs_common.enable_newmsg_notify_window) {
@@ -529,27 +523,33 @@ static void imap_notify_session_init(IMAPSession *session)
 	notify_session = g_new0(IMAPNotifySession, 1);
 	notify_session->imap_session = session;
 	notify_session->folder = folder;
+	SESSION(session)->data = notify_session;
 	SESSION(session)->recv_msg = imap_recv_msg;
 
 	sessions_list = g_slist_prepend(sessions_list, notify_session);
-
-	/* TODO: check for NOTIFY capability */
 
 	imap_notify_session_send(notify_session,
 			prefs_common.enable_newmsg_notify_window ?
 			notify_str : notify_str_no_summaries);
 }
 
-static gboolean has_imap_notify_session(PrefsAccount *account)
+static IMAPNotifySession *get_imap_notify_session(PrefsAccount *account)
 {
 	GSList *cur;
 	IMAPNotifySession *notify_session = NULL;
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
-		notify_session = (IMAPNotifySession *)cur->data;
-		if (notify_session->folder == (Folder *)account->folder)
-			break;
+		notify_session = cur->data;
+		if (notify_session->folder->account == account)
+			return notify_session;
 	}
+
+	return NULL;
+}
+
+static gboolean has_imap_notify_session(PrefsAccount *account)
+{
+	IMAPNotifySession *notify_session = get_imap_notify_session(account);
 
 	if (notify_session) {
 		if (notify_session->imap_session->session.state ==
@@ -564,7 +564,7 @@ static gboolean has_imap_notify_session(PrefsAccount *account)
 	return FALSE;
 }
 
-static void get_imap_notify_session(PrefsAccount *account)
+static void steal_imap_notify_session(PrefsAccount *account)
 {
 	IMAPSession *imap_session;
 	IMAPNotifySession *imap_notify_session;
