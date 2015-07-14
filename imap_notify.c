@@ -78,6 +78,7 @@ static gint parse_status_att_list	(gchar		*str,
 static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox);
 static void get_imap_notify_session(PrefsAccount *account);
+static gboolean has_imap_notify_session(PrefsAccount *account);
 static void imap_notify_session_init(IMAPSession *session);
 static void msg_summary_show_if_complete(MsgSummary *summary);
 static void summaries_list_free(void);
@@ -91,6 +92,11 @@ static gboolean imap_notify_session_noop(gpointer item);
 
 static GSList *sessions_list = NULL;
 
+static GSList *(*original_get_msg_list)(Folder *folder, FolderItem *item,
+		gboolean use_cache);
+static GSList *wrapped_get_msg_list(Folder *folder, FolderItem *item,
+		gboolean use_cache);
+
 static struct {
 	GSList *list;
 	gint len;
@@ -103,11 +109,17 @@ void plugin_load(void)
 	GList *list, *cur;
 	const gchar *ver;
 	gpointer mainwin;
+	FolderClass *imap_class;
 
 	g_print("IMAP NOTIFY plug-in loaded!\n");
 
 	syl_plugin_signal_connect("inc-mail-finished",
 			G_CALLBACK(inc_mail_finished_cb), NULL);
+
+	/* Wrap IMAP get_msg_list so we can snatch sessions */
+	imap_class = imap_get_class();
+	original_get_msg_list = imap_class->get_msg_list;
+	imap_class->get_msg_list = wrapped_get_msg_list;
 }
 
 void plugin_unload(void)
@@ -119,6 +131,8 @@ void plugin_unload(void)
 	for (cur = sessions_list; cur != NULL; cur = cur->next)
 		imap_notify_session_destroy(cur->data);
 	g_slist_free(sessions_list);
+
+	imap_get_class()->get_msg_list = original_get_msg_list;
 
 	summaries_list_free();
 }
@@ -133,6 +147,21 @@ gint plugin_interface_version(void)
 	return SYL_PLUGIN_INTERFACE_VERSION;
 }
 
+static GSList *wrapped_get_msg_list(Folder *folder, FolderItem *item,
+		gboolean use_cache)
+{
+	GSList *list = original_get_msg_list(folder, item, use_cache);
+
+	/* Ensure that we have a NOTIFY session for this account */
+	if (!has_imap_notify_session(folder->account)) {
+		get_imap_notify_session(folder->account);
+		/* Let it make another session */
+		g_slist_free(original_get_msg_list(folder, item, TRUE));
+	}
+
+	return list;
+}
+
 static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 {
 	GList *cur;
@@ -141,7 +170,8 @@ static void inc_mail_finished_cb(GObject *obj, gint new_messages)
 		Folder *folder = cur->data;
 		PrefsAccount *account = folder->account;
 		if (account && account->protocol == A_IMAP4 &&
-				account->folder->session)
+				account->folder->session &&
+				!has_imap_notify_session(account))
 			get_imap_notify_session(account);
 	}
 }
@@ -492,20 +522,27 @@ static void imap_notify_session_init(IMAPSession *session)
 			notify_str : notify_str_no_summaries);
 }
 
-static void get_imap_notify_session(PrefsAccount *account)
+static gboolean has_imap_notify_session(PrefsAccount *account)
 {
-	IMAPSession *imap_session;
-	IMAPNotifySession *imap_notify_session;
 	GSList *cur;
-
-	g_return_val_if_fail(account != NULL, NULL);
-	g_return_val_if_fail(account->folder != NULL, NULL);
+	IMAPNotifySession *imap_notify_session;
 
 	for (cur = sessions_list; cur != NULL; cur = cur->next) {
 		imap_notify_session = (IMAPNotifySession *)cur->data;
 		if (imap_notify_session->folder == (Folder *)account->folder)
-			return;
+			return TRUE;
 	}
+
+	return FALSE;
+}
+
+static void get_imap_notify_session(PrefsAccount *account)
+{
+	IMAPSession *imap_session;
+	IMAPNotifySession *imap_notify_session;
+
+	g_return_val_if_fail(account != NULL, NULL);
+	g_return_val_if_fail(account->folder != NULL, NULL);
 
 	/* No NOTIFY session yet. Try to steal one from the folder */
 

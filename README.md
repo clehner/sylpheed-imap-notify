@@ -50,13 +50,6 @@ make install
 
 ## Current issues
 
-- THe IMAP NOTIFY listener does not start for an IMAP account until the account
-  is scanned once for new mail. It will show a popup notification saying
-  "ready" to indicate that it has started. If the session gets disconnected, it
-  won't reconnect until the account is scanned for new mail again. Therefore it
-  is a good idea to keep the Auto-check new mail preference enabled, and
-  perhaps the check new mail on startup preference as well.
-
 - If you start Sylpheed with notifications disabled and then enable
   them, you will have to restart the application for that setting to take
   effect in this plugin.
