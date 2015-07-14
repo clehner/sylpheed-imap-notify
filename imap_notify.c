@@ -147,6 +147,19 @@ gint plugin_interface_version(void)
 	return SYL_PLUGIN_INTERFACE_VERSION;
 }
 
+static gboolean account_cb(gpointer data)
+{
+	PrefsAccount *account = data;
+
+	if (syl_plugin_summary_is_locked())
+		return G_SOURCE_CONTINUE;
+
+	if (!has_imap_notify_session(account))
+		get_imap_notify_session(account);
+
+	return G_SOURCE_REMOVE;
+}
+
 static GSList *wrapped_get_msg_list(Folder *folder, FolderItem *item,
 		gboolean use_cache)
 {
@@ -154,9 +167,10 @@ static GSList *wrapped_get_msg_list(Folder *folder, FolderItem *item,
 
 	/* Ensure that we have a NOTIFY session for this account */
 	if (!has_imap_notify_session(folder->account)) {
-		get_imap_notify_session(folder->account);
-		/* Let it make another session */
-		g_slist_free(original_get_msg_list(folder, item, TRUE));
+		/* Schedule getting the session.
+		/* Use a timeout instead of idle so that we don't get stuck
+		 * in GTK_EVENTS_FLUSH in summaryview_show */
+		gdk_threads_add_timeout(10, account_cb, folder->account);
 	}
 
 	return list;
