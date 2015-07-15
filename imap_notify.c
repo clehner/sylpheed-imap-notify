@@ -509,6 +509,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		/* fetch done */
 	} else if (msg[0] == '+') {
 		/* idling. continuation of XX5 */
+		log_message(_("Started IDLE\n"));
 	} else if (!strncmp(msg, "XX1 OK", 6)) {
 		/* inbox selected or selection closed */
 	} else if (!strncmp(msg, "XX2 OK", 6)) {
@@ -516,7 +517,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		session->noop_tag = gdk_threads_add_timeout_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_noop_timer, session, NULL);
-		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
+		log_message(_("Started NOTIFY\n"));
 	} else if (!strncmp(msg, "XX3 OK", 6)) {
 		/* noop ok */
 	} else if (!strncmp(msg, "XX5 OK", 6)) {

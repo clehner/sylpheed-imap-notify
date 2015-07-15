@@ -65,8 +65,7 @@ make install
 
 # Todo
 
-- Show better indication of when IMAP NOTIFY is running on an account
-- Add an account preference for using NOTIFY or not
+- Add an account preference for using IDLE/NOTIFY or not
 - Show fine-grained updates without having to reload the entire message summary
   view.
 - Add internationalization
