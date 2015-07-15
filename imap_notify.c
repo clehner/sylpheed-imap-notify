@@ -40,11 +40,11 @@ static const gchar
 	"XX1 NOTIFY SET "
 	    "(selected (MessageExpunge MessageNew "
 	    "(uid body.peek[header.fields (from subject)]))) "
-	    "(inboxes (MessageNew))\n"
+	    "(inboxes (MessageNew))\r\n"
 	"XX2 SELECT INBOX",
     *notify_str_no_summaries =
 	"XX1 NOTIFY SET "
-	    "(inboxes (MessageNew))\n"
+	    "(inboxes (MessageNew))\r\n"
 	"XX2 CLOSE";
 
 static const gint noop_interval = 60 * 29;
@@ -451,7 +451,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		debug_print("IMAP NOTIFY not supported by %s\n",
 			session->folder->account->recv_server);
 		/* fall back to IDLE */
-		imap_notify_session_send(session, "XX4 SELECT INBOX\n"
+		imap_notify_session_send(session, "XX4 SELECT INBOX\r\n"
 				"XX5 IDLE");
 		/* periodically stop and restart idling, to avoid timeout */
 		session->noop_tag = g_timeout_add_seconds_full(
