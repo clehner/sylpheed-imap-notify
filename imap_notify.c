@@ -35,17 +35,16 @@ static SylPluginInfo info = {
 	"IMAP NOTIFY implementation for Sylpheed"
 };
 
-static const gchar
-    *notify_str =
-	"XX1 NOTIFY SET "
+static const gchar *notify_str =
+	"XX1 SELECT INBOX\r\n"
+	"XX2 NOTIFY SET "
 	    "(selected (MessageExpunge MessageNew "
-	    "(uid body.peek[header.fields (from subject)]))) "
-	    "(inboxes (MessageNew))\r\n"
-	"XX2 SELECT INBOX",
+		"(uid body.peek[header.fields (from subject)]))) "
+	    "(inboxes (MessageNew))",
     *notify_str_no_summaries =
-	"XX1 NOTIFY SET "
-	    "(inboxes (MessageNew))\r\n"
-	"XX2 CLOSE";
+	"XX1 CLOSE\r\n"
+	"XX2 NOTIFY SET "
+	    "(inboxes (MessageNew))";
 
 static const gint noop_interval = 60 * 29;
 
@@ -435,19 +434,21 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 	} else if (msg[0] == '+') {
 		/* idling. continuation of XX5 */
 	} else if (!strncmp(msg, "XX1 OK", 6)) {
+		/* inbox selected or selection closed */
+	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
 		session->noop_tag = g_timeout_add_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_noop_timer, session, NULL);
 		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
-	} else if (!strncmp(msg, "XX2 OK", 6)) {
-		/* inbox selected */
 	} else if (!strncmp(msg, "XX3 OK", 6)) {
 		/* noop ok */
 	} else if (!strncmp(msg, "XX5 OK", 6)) {
 		/* idle done. start idling again. */
 		imap_notify_session_send(session, "XX5 IDLE");
 	} else if (!strncmp(msg, "XX1 BAD", 7)) {
+		debug_print("IMAP NOTIFY: error selecting/closing mailbox\n");
+	} else if (!strncmp(msg, "XX2 BAD", 7)) {
 		debug_print("IMAP NOTIFY not supported by %s\n",
 			session->folder->account->recv_server);
 		/* fall back to IDLE */
@@ -457,8 +458,6 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		session->noop_tag = g_timeout_add_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_done_timer, session, NULL);
-	} else if (!strncmp(msg, "XX2 BAD", 7)) {
-		debug_print("IMAP NOTIFY: error selecting/closing mailbox\n");
 	} else if (!strncmp(msg, "From: ", 4)) {
 		MsgSummary *summary = session->current_summary;
 		if (summary && prefs_common.enable_newmsg_notify_window) {
