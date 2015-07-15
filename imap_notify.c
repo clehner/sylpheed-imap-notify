@@ -353,9 +353,6 @@ static void check_new(FolderItem *item)
 	if (item->stype == F_INBOX)
 		show_notifications(item);
 
-	/* Update folder view */
-	syl_plugin_folderview_check_new_item(item);
-
 	/* Update summary */
 	/* TODO: add the item manually to summary view so it doesn't do
 	 * another SELECT command */
@@ -433,14 +430,20 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 static void imap_recv_num(IMAPNotifySession *session, gint num,
 		const gchar *msg)
 {
+	FolderItem *item = session->folder->inbox;
+
 	if (!strcmp(msg, "EXISTS")) {
-		debug_print("IMAP NOTIFY: EXISTS %d\n", num);
+		item->total = num;
+		item->updated = TRUE;
 	} else if (!strcmp(msg, "RECENT")) {
-		debug_print("IMAP NOTIFY: RECENT %d\n", num);
-		if (num > 0)
-			check_new_debounced(session->folder->inbox);
+		gint unread = num - item->new;
+		item->new = num;
+		item->unread = unread;
+		item->updated = TRUE;
+		syl_plugin_folderview_update_item(item, FALSE);
 	} else if (!strcmp(msg, "EXPUNGE")) {
 		debug_print("IMAP NOTIFY: EXPUNGE %d\n", num);
+		/* TODO: update if done by another client */
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
 		/* receiving some headers of a new message */
 		summaries.total_msgs++;
@@ -451,7 +454,7 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 			summaries.list = g_slist_prepend(summaries.list,
 					summary);
 		}
-		check_new_debounced(session->folder->inbox);
+		check_new_debounced(item);
 	} else {
 		debug_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
