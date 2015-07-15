@@ -293,6 +293,7 @@ static void msg_summaries_add_from_msg_list(GSList *mlist)
 
 static void show_notifications(FolderItem *item) {
 	IMAPNotifySession *session;
+	GSList *mlist;
 
 	gboolean notifications_wanted =
 		prefs_common.enable_newmsg_notify_window ||
@@ -301,7 +302,6 @@ static void show_notifications(FolderItem *item) {
 		(prefs_common.enable_newmsg_notify &&
 		 prefs_common.newmsg_notify_cmd);
 
-	debug_print("Notification wanted %d\n", notifications_wanted);
 	if (!notifications_wanted)
 		return;
 
@@ -310,17 +310,20 @@ static void show_notifications(FolderItem *item) {
 	if (!session)
 		return;
 
-	/* With NOTIFY, we already have the message summaries and count.
-	 * With IDLE, we get them here */
+	/* With NOTIFY, we already have the message summaries and count. But we
+	 * have to get the uncached message list anyway so that it does not
+	 * trigger a subsequent notification during regular incorporation */
+	mlist = folder_item_get_uncached_msg_list(item);
+	if (!mlist)
+		return;
+
 	if (session->use_idle) {
-		GSList *mlist = folder_item_get_uncached_msg_list(item);
-		debug_print("using idle %p %d\n", mlist,
-				g_slist_length(mlist));
 		summaries.total_msgs += g_slist_length(mlist);
 		if (prefs_common.enable_newmsg_notify_window)
 			msg_summaries_add_from_msg_list(mlist);
-		procmsg_msg_list_free(mlist);
 	}
+
+	procmsg_msg_list_free(mlist);
 
 	if (prefs_common.enable_newmsg_notify_window)
 		display_summaries();
@@ -332,7 +335,6 @@ static void check_new(FolderItem *item)
 {
 	/* TODO: add preference for showing notifications for all mailboxes
 	 * (if NOTIFY is supported) */
-	debug_print("FOLDER TYPE %d\n", item->stype);
 	if (item->stype == F_INBOX)
 		show_notifications(item);
 
@@ -340,6 +342,8 @@ static void check_new(FolderItem *item)
 	syl_plugin_folderview_check_new_item(item);
 
 	/* Update summary */
+	/* TODO: add the item manually to summary view so it doesn't do
+	 * another SELECT command */
 	syl_plugin_folderview_update_item(item, TRUE);
 }
 
@@ -436,6 +440,9 @@ static void display_summaries(void)
 	GString *str;
 
 	summaries.timer = 0;
+
+	if (summaries.total_msgs <= 0)
+		return;
 
 	g_snprintf(title, sizeof title, _("Sylpheed: %d new messages"),
 			summaries.total_msgs);
