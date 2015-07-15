@@ -400,7 +400,7 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 		return;
 	}
 
-	if (unseen || recent)
+	if (unseen)
 		check_new_debounced(item);
 }
 
