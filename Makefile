@@ -19,13 +19,19 @@ ifdef SYLPHEED_DIR
 endif
 
 $(LIB): $(OBJ)
-	$(CC) $(LDFLAGS) -shared $< -o $@
+	$(CC) $(LDFLAGS) -shared $^ -o $@
 
 $(PLUGINS_DIR):
 	mkdir -p $@
 
-install: $(LIB) | $(PLUGINS_DIR)
-	cp $(LIB) $(PLUGINS_DIR)
+check-not-running:
+	@if pgrep sylpheed >/dev/null; then \
+		read -p 'Install the plugin while Sylpheed is running? [Y/n] ' r; \
+		[ "$$r" != "n" ]; \
+	fi
+
+install: $(LIB) check-not-running | $(PLUGINS_DIR)
+	cp $< $|
 
 uninstall:
 	rm $(PLUGINS_DIR)/$(LIB)
@@ -33,4 +39,4 @@ uninstall:
 clean:
 	rm -f *.o $(LIB)
 
-.PHONY: clean install
+.PHONY: clean install check-not-running
