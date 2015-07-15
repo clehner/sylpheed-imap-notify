@@ -166,9 +166,9 @@ static GSList *wrapped_get_msg_list(Folder *folder, FolderItem *item,
 	/* Ensure that we have a NOTIFY session for this account */
 	if (!has_imap_notify_session(folder->account)) {
 		/* Schedule getting the session.
-		/* Use a timeout instead of idle so that we don't get stuck
+		 * Use a timeout instead of idle so that we don't get stuck
 		 * in GTK_EVENTS_FLUSH in summaryview_show */
-		gdk_threads_add_timeout(10, account_cb, folder->account);
+		gdk_threads_add_timeout(50, account_cb, folder->account);
 	}
 
 	return list;
@@ -192,7 +192,8 @@ static void imap_notify_session_destroy(IMAPNotifySession *session)
 {
 	sessions_list = g_slist_remove(sessions_list, session);
 	session_destroy(SESSION(session->imap_session));
-	g_source_remove(session->noop_tag);
+	if (session->noop_tag)
+		g_source_remove(session->noop_tag);
 	g_free(session);
 }
 
@@ -332,13 +333,13 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 		const gchar *msg)
 {
 	if (!strcmp(msg, "EXISTS")) {
-		log_print("IMAP NOTIFY: EXISTS %d\n", num);
+		debug_print("IMAP NOTIFY: EXISTS %d\n", num);
 	} else if (!strcmp(msg, "RECENT")) {
-		log_print("IMAP NOTIFY: RECENT %d\n", num);
-		if (num == 0) return;
-		check_new_debounced(session->folder->inbox);
+		debug_print("IMAP NOTIFY: RECENT %d\n", num);
+		if (num > 0)
+			check_new_debounced(session->folder->inbox);
 	} else if (!strcmp(msg, "EXPUNGE")) {
-		log_print("IMAP NOTIFY: EXPUNGE %d\n", num);
+		debug_print("IMAP NOTIFY: EXPUNGE %d\n", num);
 	} else if (!strncmp(msg, "FETCH ", 6) && strchr(msg + 6, '{')) {
 		/* receiving some headers of a new message */
 		summaries.total_msgs++;
@@ -351,7 +352,7 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 		}
 		check_new_debounced(session->folder->inbox);
 	} else {
-		log_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
+		debug_print("IMAP NOTIFY: unknown %s %d\n", msg, num);
 	}
 }
 
@@ -458,6 +459,14 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		session->noop_tag = g_timeout_add_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_done_timer, session, NULL);
+	} else if (!strncmp(msg, "XX5 BAD", 7)) {
+		debug_print("IMAP IDLE not supported\n");
+		g_source_remove(session->noop_tag);
+		session->noop_tag = 0;
+		session_disconnect(_session);
+		/* keep the session in the sessions list
+		 * so we don't try to reconnect to it */
+		return 0;
 	} else if (!strncmp(msg, "From: ", 4)) {
 		MsgSummary *summary = session->current_summary;
 		if (summary && prefs_common.enable_newmsg_notify_window) {
