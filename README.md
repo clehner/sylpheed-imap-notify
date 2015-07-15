@@ -1,13 +1,16 @@
-# sylph-imap-notify
+# Sylpheed IMAP IDLE/NOTIFY Plug-in
 
 This is a plugin for the [Sylpheed][] mail client which adds support for the
 IMAP NOTIFY extension ([RFC 5465][]) and the IMAP IDLE command ([RFC 2177][]).
 It allows you to receive mail in real time instead of by polling.
 
-IMAP NOTIFY is a successor to IMAP IDLE  and allows for getting
-notifications about more than one mailbox at a time on a single connection, and
-allows for listening for arbitrary mailbox events. However, it is not widely
-implemented. (It's author, Arnt Gulbrandsen, [said][Arnt] "it should have been good but is a disaster"). However, it is supported by the [Dovecot][] and [Archiveopteryx][] IMAP servers.
+IMAP NOTIFY is a successor to IMAP IDLE and allows for getting notifications
+about more than one mailbox at a time on a single connection, and allows for
+listening for arbitrary mailbox events. However, it is not widely implemented.
+(It's author, Arnt Gulbrandsen, [said][Arnt] "it should have been good but is a
+disaster"). However, it is supported by the [Dovecot][] and [Archiveopteryx][]
+IMAP servers. This plugin uses NOTIFY if the server supports it, and otherwise
+tries to use IDLE. With IDLE, only the inbox is watched for new mail.
 
 [Sylpheed]: http://sylpheed.sraoss.jp/en/
 [RFC 5465]: https://tools.ietf.org/html/rfc5465
@@ -18,6 +21,8 @@ implemented. (It's author, Arnt Gulbrandsen, [said][Arnt] "it should have been g
 
 ## Features
 
+- Updating folder view and summary view when new mail arrives
+- New mail notifications (if enabled)
 - When mail arrives, the folder view is updated. The summary view is updated if
   it is currently showing the folder containing the new mail.
 - When mail arrives in an Inbox, a new mail notification is shown if that
@@ -61,7 +66,6 @@ make install
 # Todo
 
 - Show better indication of when IMAP NOTIFY is running on an account
-- Check account capabilities before trying to use NOTIFY
 - Add an account preference for using NOTIFY or not
 - Show fine-grained updates without having to reload the entire message summary
   view.
@@ -69,8 +73,8 @@ make install
 
 # Why a plugin
 
-The LibSylph IMAP4 client implementation is synchronous. When IMAP NOTIFY is
-used, notifications could arrive at any time. This would interfere with
-LibSylph's IMAP code and would require significant changes. This plugin uses
-a workaround of having a second IMAP session for the asynchronous events, so
-that the core IMAP code is left untouched.
+The LibSylph IMAP4 client implementation is synchronous. When IMAP NOTIFY/IDLE
+is used, notifications could arrive at any time. This would require significant
+changes to LibSylph's IMAP code. This plugin uses a workaround of having a
+second IMAP session for the asynchronous events, so that the core IMAP code is
+left untouched.
