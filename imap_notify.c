@@ -375,25 +375,23 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 	gint unseen = 0;
 	FolderItem *item;
 
-	log_print("IMAP NOTIFY STATUS: %s\n", msg);
-
-	if (*str == '"') {
-		mailbox = str;
-		extract_quote_with_escape(mailbox, '"');
-		mailbox++;
-	} else {
-		mailbox = str;
-		str = strchr(str, ' ');
-		if (str)
-			*str++ = '\0';
+	if (parse_status_att_list(str, &messages, &recent, &uid_next,
+				  &uid_validity, &unseen) < 0) {
+		debug_print("IMAP NOTIFY parsing status failed.");
+		return;
 	}
 
-	if (parse_status_att_list(str, &messages, &recent, &uid_next,
-				  &uid_validity, &unseen) < 0)
-		return;
+	mailbox = str;
+	if (*str == '"') {
+		extract_quote_with_escape(mailbox, '"');
+	} else {
+		str = strchr(mailbox, ' ');
+		if (str)
+			*str = '\0';
+	}
 
 	debug_print("IMAP NOTIFY status: \"%s\" %d %d %zu %zu %d\n",
-			mailbox, messages, recent, uid_next, uid_validity, unseen);
+			str, messages, recent, uid_next, uid_validity, unseen);
 
 	item = get_folder_item_for_mailbox(session, mailbox);
 
