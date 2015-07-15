@@ -69,6 +69,7 @@ make install
 - Show fine-grained updates without having to reload the entire message summary
   view.
 - Add internationalization
+- Filter new messages in INBOX if that preference is enabled
 
 # Why a plugin
 
