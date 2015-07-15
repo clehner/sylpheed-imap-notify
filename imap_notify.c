@@ -54,6 +54,20 @@ typedef struct _MsgSummary
 	gchar *from;
 } MsgSummary;
 
+typedef struct _MailboxStatus
+{
+	gint messages;
+	gint recent;
+	gint unseen;
+	guint32 uid_next;
+	guint32 uid_validity;
+	guint has_messages : 1;
+	guint has_recent : 1;
+	guint has_unseen : 1;
+	guint has_uid_next : 1;
+	guint has_uid_validity : 1;
+} MailboxStatus;
+
 typedef struct _IMAPNotifySession
 {
 	IMAPSession *imap_session;
@@ -70,12 +84,7 @@ static void execute_notification_command(void);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
 static void imap_recv_status(IMAPNotifySession *session, const gchar *msg);
-static gint parse_status_att_list	(gchar		*str,
-					 gint		*messages,
-					 gint		*recent,
-					 guint32	*uid_next,
-					 guint32	*uid_validity,
-					 gint		*unseen);
+static gint parse_status_att_list(gchar *str, MailboxStatus *status);
 static FolderItem *get_folder_item_for_mailbox(IMAPNotifySession *session,
 		const gchar *mailbox);
 static IMAPNotifySession *get_imap_notify_session(PrefsAccount *account);
@@ -235,12 +244,13 @@ static void msg_summary_show_if_complete(MsgSummary *summary) {
 			display_summaries_cb, NULL, NULL);
 }
 
-static gint parse_status_att_list(gchar *str,
-				  gint *messages, gint *recent,
-				  guint32 *uid_next, guint32 *uid_validity,
-				  gint *unseen)
+static gint parse_status_att_list(gchar *str, MailboxStatus *status)
 {
+	status->has_messages = status->has_recent = status->has_unseen =
+		status->has_uid_next = status->has_uid_validity = 0;
+
 	if (!str) return -1;
+
 	str = strrchr_with_skip_quote(str, '"', '(');
 	if (!str) return -1;
 	str++;
@@ -250,19 +260,24 @@ static gint parse_status_att_list(gchar *str,
 
 		if (!strncmp(str, "MESSAGES ", 9)) {
 			str += 9;
-			*messages = strtol(str, &str, 10);
+			status->messages = strtol(str, &str, 10);
+			status->has_messages = TRUE;
 		} else if (!strncmp(str, "RECENT ", 7)) {
 			str += 7;
-			*recent = strtol(str, &str, 10);
+			status->recent = strtol(str, &str, 10);
+			status->has_recent = TRUE;
 		} else if (!strncmp(str, "UIDNEXT ", 8)) {
 			str += 8;
-			*uid_next = strtoul(str, &str, 10);
+			status->uid_next = strtoul(str, &str, 10);
+			status->has_uid_next = TRUE;
 		} else if (!strncmp(str, "UIDVALIDITY ", 12)) {
 			str += 12;
-			*uid_validity = strtoul(str, &str, 10);
+			status->uid_validity = strtoul(str, &str, 10);
+			status->has_uid_validity = TRUE;
 		} else if (!strncmp(str, "UNSEEN ", 7)) {
 			str += 7;
-			*unseen = strtol(str, &str, 10);
+			status->unseen = strtol(str, &str, 10);
+			status->has_unseen = TRUE;
 		} else {
 			g_warning("invalid STATUS response: %s\n", str);
 			break;
@@ -368,15 +383,10 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 {
 	gchar *str = (gchar *)msg;
 	gchar *mailbox;
-	gint messages = 0;
-	gint recent = 0;
-	guint32 uid_next = 0;
-	guint32 uid_validity = 0;
-	gint unseen = 0;
 	FolderItem *item;
+	MailboxStatus status;
 
-	if (parse_status_att_list(str, &messages, &recent, &uid_next,
-				  &uid_validity, &unseen) < 0) {
+	if (parse_status_att_list(str, &status) < 0) {
 		debug_print("IMAP NOTIFY parsing status failed.");
 		return;
 	}
@@ -390,8 +400,14 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 			*str = '\0';
 	}
 
-	debug_print("IMAP NOTIFY status: \"%s\" %d %d %zu %zu %d\n",
-			str, messages, recent, uid_next, uid_validity, unseen);
+	debug_print("IMAP mailbox status:"
+			"\"%s\" messages: %d recent: %d unseen: %d "
+			"uid_next: %zu uid_validity: %zu\n", str,
+			status.has_messages ? status.messages : -1,
+			status.has_recent ? status.recent : -1,
+			status.has_unseen ? status.unseen : -1,
+			status.has_uid_next ? status.uid_next : -1,
+			status.has_uid_validity ? status.uid_validity : -1);
 
 	item = get_folder_item_for_mailbox(session, mailbox);
 
@@ -400,8 +416,18 @@ static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
 		return;
 	}
 
-	if (unseen)
-		check_new_debounced(item);
+	if (status.has_messages)
+		item->total = status.messages;
+	if (status.has_unseen) {
+		gint recent = status.unseen - item->unread;
+		item->new = recent > 0 ? recent : 0;
+		item->unread = status.unseen;
+	}
+	if (status.has_uid_next)
+		item->last_num = status.uid_next - 1;
+	item->updated = TRUE;
+
+	syl_plugin_folderview_update_item(item, TRUE);
 }
 
 static void imap_recv_num(IMAPNotifySession *session, gint num,
