@@ -30,7 +30,7 @@
 
 static SylPluginInfo info = {
 	"IMAP NOTIFY Plug-in",
-	"0.1.0",
+	"1.0.0",
 	"Charles Lehner",
 	"IMAP NOTIFY implementation for Sylpheed"
 };
