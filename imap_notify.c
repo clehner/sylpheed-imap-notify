@@ -75,6 +75,7 @@ typedef struct _IMAPNotifySession
 	MsgSummary *current_summary;
 	gint noop_tag;
 	gboolean use_idle;
+	gboolean failed;
 } IMAPNotifySession;
 
 static void inc_mail_finished_cb(GObject *obj, gint new_messages);
@@ -574,6 +575,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		debug_print("IMAP IDLE not supported\n");
 		g_source_remove(session->noop_tag);
 		session->noop_tag = 0;
+		session->failed = TRUE;
 		session_disconnect(_session);
 		/* keep the session in the sessions list
 		 * so we don't try to reconnect to it */
@@ -688,9 +690,10 @@ static gboolean has_imap_notify_session(PrefsAccount *account)
 	IMAPNotifySession *notify_session = get_imap_notify_session(account);
 
 	if (notify_session) {
-		if (notify_session->imap_session->session.state ==
-				SESSION_EOF) {
-			debug_print("IMAP NOTIFY session ended\n");
+		if (!session_is_connected
+				(&notify_session->imap_session->session) &&
+				!notify_session->failed) {
+			log_print(_("IMAP NOTIFY session ended\n"));
 			imap_notify_session_destroy(notify_session);
 			return FALSE;
 		}
