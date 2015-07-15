@@ -60,11 +60,13 @@ typedef struct _IMAPNotifySession
 	Folder *folder;
 	MsgSummary *current_summary;
 	gint noop_tag;
+	gboolean use_idle;
 } IMAPNotifySession;
 
 static void inc_mail_finished_cb(GObject *obj, gint new_messages);
 static void imap_notify_session_noop_cb(IMAPSession *session);
-static gboolean display_summaries(gpointer item);
+static void display_summaries(void);
+static void execute_notification_command(void);
 
 static gint imap_recv_msg(Session *session, const gchar *msg);
 static void imap_recv_status(IMAPNotifySession *session, const gchar *msg);
@@ -127,8 +129,10 @@ void plugin_unload(void)
 
 	g_print("IMAP NOTIFY plugin unloaded\n");
 
+	/*
 	g_slist_free_full(sessions_list,
 			(GDestroyNotify)imap_notify_session_destroy);
+			*/
 
 	imap_get_class()->get_msg_list = original_get_msg_list;
 
@@ -213,6 +217,11 @@ static void summaries_list_free(void)
 	summaries.timer = 0;
 }
 
+static gboolean display_summaries_cb(gpointer item) {
+	display_summaries();
+	return G_SOURCE_REMOVE;
+}
+
 static void msg_summary_show_if_complete(MsgSummary *summary) {
 	if (!summary->from || !summary->subject) {
 		debug_print("summary not ready. %s %s\n", summary->from,
@@ -222,8 +231,8 @@ static void msg_summary_show_if_complete(MsgSummary *summary) {
 	/* debounce showing the notification */
 	if (summaries.timer)
 		g_source_remove(summaries.timer);
-	summaries.timer = g_timeout_add_full(G_PRIORITY_LOW, 80,
-			display_summaries, NULL, NULL);
+	summaries.timer = gdk_threads_add_timeout_full(G_PRIORITY_LOW, 80,
+			display_summaries_cb, NULL, NULL);
 }
 
 static gint parse_status_att_list(gchar *str,
@@ -263,10 +272,73 @@ static gint parse_status_att_list(gchar *str,
 	return 0;
 }
 
+static void msg_summaries_add_from_msg_list(GSList *mlist)
+{
+	GSList *cur;
+
+	for (cur = mlist; cur != NULL; cur = cur->next) {
+		MsgInfo *msginfo = (MsgInfo *)cur->data;
+		MsgSummary *summary;
+
+		if (summaries.len >= 5)
+			break;
+
+		summary = g_new0(MsgSummary, 1);
+		summary->subject = g_strdup(msginfo->subject);
+		summary->from = g_strdup(msginfo->fromname);
+		summaries.list = g_slist_prepend(summaries.list, summary);
+		summaries.len++;
+	}
+}
+
+static void show_notifications(FolderItem *item) {
+	IMAPNotifySession *session;
+
+	gboolean notifications_wanted =
+		prefs_common.enable_newmsg_notify_window ||
+		(prefs_common.enable_newmsg_notify_sound &&
+		 prefs_common.newmsg_notify_sound) ||
+		(prefs_common.enable_newmsg_notify &&
+		 prefs_common.newmsg_notify_cmd);
+
+	debug_print("Notification wanted %d\n", notifications_wanted);
+	if (!notifications_wanted)
+		return;
+
+	session = get_imap_notify_session(item->folder->account);
+	debug_print("session %p\n", session);
+	if (!session)
+		return;
+
+	/* With NOTIFY, we already have the message summaries and count.
+	 * With IDLE, we get them here */
+	if (session->use_idle) {
+		GSList *mlist = folder_item_get_uncached_msg_list(item);
+		debug_print("using idle %p %d\n", mlist,
+				g_slist_length(mlist));
+		summaries.total_msgs += g_slist_length(mlist);
+		if (prefs_common.enable_newmsg_notify_window)
+			msg_summaries_add_from_msg_list(mlist);
+		procmsg_msg_list_free(mlist);
+	}
+
+	if (prefs_common.enable_newmsg_notify_window)
+		display_summaries();
+
+	execute_notification_command();
+}
+
 static void check_new(FolderItem *item)
 {
+	/* TODO: add preference for showing notifications for all mailboxes
+	 * (if NOTIFY is supported) */
+	debug_print("FOLDER TYPE %d\n", item->stype);
+	if (item->stype == F_INBOX)
+		show_notifications(item);
+
 	/* Update folder view */
 	syl_plugin_folderview_check_new_item(item);
+
 	/* Update summary */
 	syl_plugin_folderview_update_item(item, TRUE);
 }
@@ -284,7 +356,8 @@ static void check_new_debounced(FolderItem *item)
 
 	if (item->cache_dirty) return;
 	item->cache_dirty = TRUE;
-	g_timeout_add_full(G_PRIORITY_LOW, 50, check_new_cb, item, NULL);
+	gdk_threads_add_timeout_full(G_PRIORITY_LOW, 50,
+			check_new_cb, item, NULL);
 }
 
 static void imap_recv_status(IMAPNotifySession *session, const gchar *msg)
@@ -356,7 +429,8 @@ static void imap_recv_num(IMAPNotifySession *session, gint num,
 	}
 }
 
-static gboolean display_summaries(gpointer item) {
+static void display_summaries(void)
+{
 	GSList *cur;
 	gchar title[1024];
 	GString *str;
@@ -385,7 +459,10 @@ static gboolean display_summaries(gpointer item) {
 
 	g_string_free(str, TRUE);
 	summaries_list_free();
+}
 
+static void execute_notification_command(void)
+{
 	/* play sound */
 	if (prefs_common.enable_newmsg_notify_sound &&
 	    prefs_common.newmsg_notify_sound) {
@@ -407,8 +484,6 @@ static gboolean display_summaries(gpointer item) {
 				 sizeof(buf));
 		execute_command_line(buf, TRUE);
 	}
-
-	return G_SOURCE_REMOVE;
 }
 
 static gboolean imap_notify_session_noop_timer(gpointer item)
@@ -438,7 +513,7 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		/* inbox selected or selection closed */
 	} else if (!strncmp(msg, "XX2 OK", 6)) {
 		/* notify set */
-		session->noop_tag = g_timeout_add_seconds_full(
+		session->noop_tag = gdk_threads_add_timeout_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_noop_timer, session, NULL);
 		syl_plugin_notification_window_open("IMAP NOTIFY", "ready", 2);
@@ -453,10 +528,11 @@ static gint imap_recv_msg(Session *_session, const gchar *msg)
 		debug_print("IMAP NOTIFY not supported by %s\n",
 			session->folder->account->recv_server);
 		/* fall back to IDLE */
+		session->use_idle = TRUE;
 		imap_notify_session_send(session, "XX4 SELECT INBOX\r\n"
 				"XX5 IDLE");
 		/* periodically stop and restart idling, to avoid timeout */
-		session->noop_tag = g_timeout_add_seconds_full(
+		session->noop_tag = gdk_threads_add_timeout_seconds_full(
 				G_PRIORITY_LOW, noop_interval,
 				imap_notify_session_done_timer, session, NULL);
 	} else if (!strncmp(msg, "XX5 BAD", 7)) {

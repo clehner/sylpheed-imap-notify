@@ -1,10 +1,10 @@
 # sylph-imap-notify
 
 This is a plugin for the [Sylpheed][] mail client which adds support for the
-IMAP NOTIFY extension ([RFC 5465][]). It allows you to receive mail in real
-time instead of by polling.
+IMAP NOTIFY extension ([RFC 5465][]) and the IMAP IDLE command ([RFC 2177][]).
+It allows you to receive mail in real time instead of by polling.
 
-IMAP NOTIFY is a successor to IMAP IDLE ([RFC 2177][]) and allows for getting
+IMAP NOTIFY is a successor to IMAP IDLE  and allows for getting
 notifications about more than one mailbox at a time on a single connection, and
 allows for listening for arbitrary mailbox events. However, it is not widely
 implemented. (It's author, Arnt Gulbrandsen, [said][Arnt] "it should have been good but is a disaster"). However, it is supported by the [Dovecot][] and [Archiveopteryx][] IMAP servers.
