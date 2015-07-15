@@ -21,12 +21,8 @@ tries to use IDLE. With IDLE, only the inbox is watched for new mail.
 
 ## Features
 
-- Updating folder view and summary view when new mail arrives
-- New mail notifications (if enabled)
-- When mail arrives, the folder view is updated. The summary view is updated if
-  it is currently showing the folder containing the new mail.
-- When mail arrives in an Inbox, a new mail notification is shown if that
-  preference is enabled.
+- Updates folder view and summary view when new mail arrives
+- Shows new mail notifications and executes the new mail command (if enabled)
 
 ## License
 
@@ -47,8 +43,8 @@ Compile and install the plugin:
 
 ```
 cd plugin
-git clone https://github.com/clehner/sylph-imap-notify
-cd sylph-imap-notify
+git clone https://github.com/clehner/sylpheed-imap-notify
+cd sylpheed-imap-notify
 make SYLPHEED_DIR=../../
 make install
 ```
@@ -62,6 +58,9 @@ make install
 - The plugin only handles new mail notificaions. It does not
   handle message expunge events, flag changes, mailbox changes, or other
   events.
+
+- There may be problems with reconnecting to timed-out or disconnected
+  sessions.
 
 # Todo
 
